@@ -33,9 +33,9 @@ select = 'wifi' # {'hhar', 'wifi'}
 if len(sys.argv) > 1:
 	select = sys.argv[1]
 if select != 'wifi' and select != 'hhar':
-	print 'select wifi or hhar'
+	print('select wifi or hhar')
 	sys.exit("select wifi or hhar")
-print 'select', select
+print('select', select)
 
 if select == 'wifi':
 	SERIES_SIZE = 512
@@ -48,27 +48,27 @@ if select == 'hhar':
 	SENSOR_NUM = 2
 	OUT_DIM = 6
 
-print 'GEN_FFT_N', GEN_FFT_N
-print 'GEN_FFT_N2', GEN_FFT_N2
-print 'FILTER_LEN', FILTER_LEN
-print 'DILATION_LEN', DILATION_LEN
-print 'KEEP_PROB', KEEP_PROB
-print 'GEN_C_OUT', GEN_C_OUT
+print('GEN_FFT_N', GEN_FFT_N)
+print('GEN_FFT_N2', GEN_FFT_N2)
+print('FILTER_LEN', FILTER_LEN)
+print('DILATION_LEN', DILATION_LEN)
+print('KEEP_PROB', KEEP_PROB)
+print('GEN_C_OUT', GEN_C_OUT)
 
 FILTER_EXP_SEL = 'linear_interp' #{linear_interp', 'time_zeropadding'}
-print 'FILTER_EXP_SEL', FILTER_EXP_SEL
+print('FILTER_EXP_SEL', FILTER_EXP_SEL)
 
 FILTER_INIT = 'real' #{'real', 'complex'}
-print 'FILTER_INIT', FILTER_INIT
+print('FILTER_INIT', FILTER_INIT)
 
 GLOBAL_KERNEL_SIZE = 32
-print 'GLOBAL_KERNEL_SIZE', GLOBAL_KERNEL_SIZE
+print('GLOBAL_KERNEL_SIZE', GLOBAL_KERNEL_SIZE)
 
 CONV_KERNEL_INIT = 'freq' #{'time', 'freq'}
-print 'CONV_KERNEL_INIT', CONV_KERNEL_INIT
+print('CONV_KERNEL_INIT', CONV_KERNEL_INIT)
 
 MERGE_INIT = 'zero'
-print 'MERGE_INIT', MERGE_INIT
+print('MERGE_INIT', MERGE_INIT)
 
 ADAM_LR = 1e-4
 ADAM_B1 = 0.9
@@ -88,15 +88,15 @@ if select == 'hhar':
 DROP_FLAG = True
 INPUT_COMPLEX_NORM_FLAG = True
 CLIP_FLAG = False
-print 'ACT_DOMIAN', ACT_DOMIAN
-print 'DROP_FLAG', DROP_FLAG
-print 'INPUT_COMPLEX_NORM_FLAG', INPUT_COMPLEX_NORM_FLAG
-print 'FILTER_FLAG', FILTER_FLAG
-print 'FREQ_CONV_FLAG', FREQ_CONV_FLAG
-print 'CLIP_FLAG', CLIP_FLAG
-print 'ADAM_LR', ADAM_LR
-print 'ADAM_B1', ADAM_B1
-print 'ADAM_B2', ADAM_B2
+print('ACT_DOMIAN', ACT_DOMIAN)
+print('DROP_FLAG', DROP_FLAG)
+print('INPUT_COMPLEX_NORM_FLAG', INPUT_COMPLEX_NORM_FLAG)
+print('FILTER_FLAG', FILTER_FLAG)
+print('FREQ_CONV_FLAG', FREQ_CONV_FLAG)
+print('CLIP_FLAG', CLIP_FLAG)
+print('ADAM_LR', ADAM_LR)
+print('ADAM_B1', ADAM_B1)
+print('ADAM_B2', ADAM_B2)
 
 metaDict = {'hhar':[13544, 1765],
 			'wifi':[11100, 900]}
@@ -108,22 +108,22 @@ TOTAL_ITER_NUM = 10000000
 CLIP_VAL = 0.3
 
 if CLIP_FLAG:
-	print 'CLIP_VAL', CLIP_VAL
+	print('CLIP_VAL', CLIP_VAL)
 
 def complex_glorot_uniform(c_in, c_out_total, fft_list, fft_n, use_bias=True, name='complex_mat'):
 	with tf.variable_scope(name):
-		c_out = int(c_out_total)/len(fft_list)
+		c_out = int(c_out_total)//len(fft_list)
 
 		if FILTER_INIT == 'real':
 			kernel = tf.get_variable('kernel', shape = [1, 1, c_in*c_out, fft_n],
 							initializer=tf.contrib.layers.xavier_initializer())
 			kernel_complex_org = tf.fft(tf.complex(kernel, 0.*kernel))
 			kernel_complex_org = tf.transpose(kernel_complex_org, [0, 1, 3, 2])
-			kernel_complex_org = kernel_complex_org[:,:,:int(fft_n)/2+1,:]
+			kernel_complex_org = kernel_complex_org[:,:,:int(fft_n)//2+1,:]
 		elif FILTER_INIT == 'complex':
-			kernel_r = tf.get_variable('kernel_real', shape = [1, 1, fft_n/2+1, c_in*c_out],
+			kernel_r = tf.get_variable('kernel_real', shape = [1, 1, fft_n//2+1, c_in*c_out],
 								initializer=tf.contrib.layers.xavier_initializer())
-			kernel_i = tf.get_variable('kernel_imag', shape = [1, 1, fft_n/2+1, c_in*c_out],
+			kernel_i = tf.get_variable('kernel_imag', shape = [1, 1, fft_n//2+1, c_in*c_out],
 								initializer=tf.contrib.layers.xavier_initializer())
 			kernel_complex_org = tf.complex(kernel_r, kernel_i)
 
@@ -131,30 +131,30 @@ def complex_glorot_uniform(c_in, c_out_total, fft_list, fft_n, use_bias=True, na
 		for fft_elem in fft_list:
 			if fft_elem < fft_n:
 				kernel_complex_r = tf.image.resize_bilinear(tf.real(kernel_complex_org), 
-						[1, int(fft_elem/2)+1], align_corners=True)
+						[1, int(fft_elem//2)+1], align_corners=True)
 				kernel_complex_i = tf.image.resize_bilinear(tf.imag(kernel_complex_org), 
-						[1, int(fft_elem/2)+1], align_corners=True)
+						[1, int(fft_elem//2)+1], align_corners=True)
 				kernel_complex_dict[fft_elem] = tf.reshape(tf.complex(kernel_complex_r, kernel_complex_i),
-						[1, 1, int(fft_elem/2)+1, c_in, c_out])
+						[1, 1, int(fft_elem//2)+1, c_in, c_out])
 			elif fft_elem == fft_n:
 				kernel_complex_dict[fft_elem] = tf.reshape(kernel_complex_org, 
-											[1, 1, int(fft_elem/2)+1, c_in, c_out])
+											[1, 1, int(fft_elem//2)+1, c_in, c_out])
 			else:
 				if FILTER_EXP_SEL == 'time_zeropadding':
 					zero_pad = tf.zeros([1, 1, c_in*c_out, fft_elem-fft_n])
 					kernel_zPad = tf.concat([kernel, zero_pad], 3)
 					kernel_zPad_complex = tf.fft(tf.complex(kernel_zPad, 0.*kernel_zPad))
 					kernel_zPad_complex = tf.transpose(kernel_zPad_complex, [0, 1, 3, 2])
-					kernel_zPad_complex = kernel_zPad_complex[:,:,:int(fft_elem)/2+1,:]
+					kernel_zPad_complex = kernel_zPad_complex[:,:,:int(fft_elem)//2+1,:]
 					kernel_complex_dict[fft_elem] = tf.reshape(kernel_zPad_complex, 
-												[1, 1, int(fft_elem/2)+1, c_in, c_out])
+												[1, 1, int(fft_elem//2)+1, c_in, c_out])
 				elif FILTER_EXP_SEL == 'linear_interp':
 					kernel_complex_r = tf.image.resize_bilinear(tf.real(kernel_complex_org), 
-							[1, int(fft_elem/2)+1], align_corners=True)
+							[1, int(fft_elem//2)+1], align_corners=True)
 					kernel_complex_i = tf.image.resize_bilinear(tf.imag(kernel_complex_org), 
-							[1, int(fft_elem/2)+1], align_corners=True)
+							[1, int(fft_elem//2)+1], align_corners=True)
 					kernel_complex_dict[fft_elem] = tf.reshape(tf.complex(kernel_complex_r, kernel_complex_i),
-							[1, 1, int(fft_elem/2)+1, c_in, c_out])
+							[1, 1, int(fft_elem//2)+1, c_in, c_out])
 
 		if use_bias:
 			bias_complex_r = tf.get_variable('bias_real', shape=[c_out*len(fft_list)], 
@@ -168,7 +168,7 @@ def complex_glorot_uniform(c_in, c_out_total, fft_list, fft_n, use_bias=True, na
 
 def spectral_filter_gen(c_in, c_out_total, basic_len, len_list, use_bias, name='spectral_filter'):
 	with tf.variable_scope(name):
-		c_out = int(c_out_total)/len(len_list)
+		c_out = int(c_out_total)//len(len_list)
 		if CONV_KERNEL_INIT == 'freq':
 			kernel_r = tf.get_variable('kernel_real', shape = [1, basic_len, c_in, c_out],
 										initializer=tf.contrib.layers.xavier_initializer())
@@ -318,7 +318,7 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 
 		patch_fft_list = []
 		patch_mask_list = []
-		for idx in xrange(len(fft_n_list)):
+		for idx in range(len(fft_n_list)):
 			patch_fft_list.append(0.)
 			patch_mask_list.append([])
 
@@ -330,7 +330,7 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 				patch_fft =  tf.contrib.signal.stft(inputs, 
 								window_fn=None,
 								frame_length=in_f_step, frame_step=f_step, fft_length=in_f_step)
-				patch_fft = patch_fft[:,:,:,:int(fft_n/2)+1]
+				patch_fft = patch_fft[:,:,:,:int(fft_n)//2+1]
 			else:
 				f_step = fft_n
 				patch_fft =  tf.contrib.signal.stft(inputs, 
@@ -348,9 +348,9 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 						patch_mask = patch_mask - exist_mask
 					patch_fft_list[fft_idx2] = patch_fft_list[fft_idx2] + patch_mask*patch_fft
 				else:
-					time_ratio = tar_fft_n/fft_n
+					time_ratio = tar_fft_n//fft_n
 					patch_fft_mod = tf.reshape(patch_fft, 
-						[BATCH_SIZE, ser_size/tar_fft_n, time_ratio, int(fft_n/2)+1, c_in])
+						[BATCH_SIZE, ser_size//tar_fft_n, time_ratio, int(fft_n)//2+1, c_in])
 					
 					patch_fft_mod = tf.transpose(patch_fft_mod, [0, 1, 3, 4, 2])
 
@@ -360,14 +360,14 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 					patch_fft_mod = atten_merge(patch_fft_mod, merge_kernel, merge_bias)*float(time_ratio)
 					
 					patch_mask = tf.ones_like(patch_fft_mod)
-					patch_mask = zero_interp(patch_mask, time_ratio, ser_size/tar_fft_n, 
-									int(fft_n/2)+1, int(tar_fft_n/2)+1, c_in)
+					patch_mask = zero_interp(patch_mask, time_ratio, ser_size//tar_fft_n, 
+									int(fft_n)//2+1, int(tar_fft_n)//2+1, c_in)
 					for exist_mask in patch_mask_list[fft_idx2]:
 						patch_mask = patch_mask - exist_mask
 					patch_mask_list[fft_idx2].append(patch_mask)
 
-					patch_fft_mod = zero_interp(patch_fft_mod, time_ratio, ser_size/tar_fft_n, 
-									int(fft_n/2)+1, int(tar_fft_n/2)+1, c_in)
+					patch_fft_mod = zero_interp(patch_fft_mod, time_ratio, ser_size//tar_fft_n, 
+									int(fft_n)//2+1, int(tar_fft_n)//2+1, c_in)
 
 					patch_fft_list[fft_idx2] = patch_fft_list[fft_idx2] + patch_mask*patch_fft_mod
 
@@ -376,7 +376,7 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 			# f_step = f_step_list[fft_idx]
 			k_len = kenel_len_list[fft_idx]
 			d_len = dilation_len_list[fft_idx]
-			paddings = [(k_len*d_len-d_len)/2, (k_len*d_len-d_len)/2]
+			paddings = [(k_len*d_len-d_len)//2, (k_len*d_len-d_len)//2]
 
 			patch_fft = patch_fft_list[fft_idx]
 
@@ -404,9 +404,9 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 					conv_kernel_i = tf.expand_dims(conv_kernel_i, 2)
 					zero_f = tf.tile(tf.zeros_like(conv_kernel_r), [1, 1, d_len-1, 1, 1])
 					conv_kernel_r = tf.reshape(tf.concat([conv_kernel_r, zero_f], 2), 
-											[1, k_len*d_len, c_in, c_out/len(fft_n_list)])
+											[1, k_len*d_len, c_in, c_out//len(fft_n_list)])
 					conv_kernel_i = tf.reshape(tf.concat([conv_kernel_i, zero_f], 2),
-											[1, k_len*d_len, c_in, c_out/len(fft_n_list)])
+											[1, k_len*d_len, c_in, c_out//len(fft_n_list)])
 					conv_kernel_r = conv_kernel_r[:,:(k_len*d_len-d_len+1),:,:]
 					conv_kernel_i = conv_kernel_i[:,:(k_len*d_len-d_len+1),:,:]
 
@@ -425,7 +425,7 @@ def STFLayer(inputs, fft_list, f_step_list, kenel_len_list, dilation_len_list, c
 			if FILTER_FLAG:
 				patch_kernel = patch_kernel_dict[fft_n]
 				patch_fft = tf.complex(patch_fft_r, patch_fft_i)
-				patch_fft = tf.tile(tf.expand_dims(patch_fft, 4), [1, 1, 1, 1, c_out/FFT_L_SIZE])
+				patch_fft = tf.tile(tf.expand_dims(patch_fft, 4), [1, 1, 1, 1, c_out//FFT_L_SIZE])
 				patch_fft_out = patch_fft*patch_kernel
 				patch_fft_out = tf.reduce_sum(patch_fft_out, 3)
 				patch_out_r = tf.real(patch_fft_out)
@@ -473,10 +473,10 @@ def STFNet(inputs, train, reuse=False, name='STFNet'):
 				noise_shape=[BATCH_SIZE, 1, GEN_C_OUT], scope='acc_dropout2')
 
 		acc_layer3 = STFLayer(acc_layer2, GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, 
-							GEN_C_OUT, GEN_C_OUT/2, reuse, name='acc_layer3')
+							GEN_C_OUT, GEN_C_OUT//2, reuse, name='acc_layer3')
 		if DROP_FLAG:
 			acc_layer3 = layers.dropout(acc_layer3, KEEP_PROB, is_training=train, 
-				noise_shape=[BATCH_SIZE, 1, int((GEN_C_OUT/2)/len(GEN_FFT_N))*len(GEN_FFT_N)], 
+				noise_shape=[BATCH_SIZE, 1, int((GEN_C_OUT//2)//len(GEN_FFT_N))*len(GEN_FFT_N)], 
 				scope='acc_dropout3')
 
 		gyro_layer1 = STFLayer(gyro_in, GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, 
@@ -492,15 +492,15 @@ def STFNet(inputs, train, reuse=False, name='STFNet'):
 				noise_shape=[BATCH_SIZE, 1, GEN_C_OUT], scope='gyro_dropout2')
 
 		gyro_layer3 = STFLayer(gyro_layer2, GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, 
-							GEN_C_OUT, GEN_C_OUT/2, reuse, name='gyro_layer3')
+							GEN_C_OUT, GEN_C_OUT//2, reuse, name='gyro_layer3')
 		if DROP_FLAG:
 			gyro_layer3 = layers.dropout(gyro_layer3, KEEP_PROB, is_training=train, 
-				noise_shape=[BATCH_SIZE, 1, int((GEN_C_OUT/2)/len(GEN_FFT_N))*len(GEN_FFT_N)], 
+				noise_shape=[BATCH_SIZE, 1, int((GEN_C_OUT//2)//len(GEN_FFT_N))*len(GEN_FFT_N)], 
 				scope='gyro_dropout3')
 
 		sensor_in = tf.concat([acc_layer3, gyro_layer3], 2)
 		sensor_layer1 = STFLayer(sensor_in, GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, 
-					int((GEN_C_OUT/2)/len(GEN_FFT_N))*len(GEN_FFT_N)*2, GEN_C_OUT, reuse, 
+					int((GEN_C_OUT//2)//len(GEN_FFT_N))*len(GEN_FFT_N)*2, GEN_C_OUT, reuse, 
 					out_fft_list=GEN_FFT_N2, ser_size=SERIES_SIZE2, pooling=True, name='sensor_layer1')
 		if DROP_FLAG:
 			sensor_layer1 = layers.dropout(sensor_layer1, KEEP_PROB, is_training=train, 
@@ -544,7 +544,7 @@ t_vars = tf.trainable_variables()
 
 regularizers = 0.
 for var in t_vars:
-	print var.name
+	print(var.name)
 	if 'angle' in var.name:
 		continue
 	regularizers += tf.nn.l2_loss(var)
@@ -572,7 +572,7 @@ with tf.Session() as sess:
 	coord = tf.train.Coordinator()
 	threads = tf.train.start_queue_runners(coord=coord)
 
-	for iteration in xrange(TOTAL_ITER_NUM):
+	for iteration in range(TOTAL_ITER_NUM):
 		_, lossV, _trainY, _predict = sess.run([discOptimizer, loss, batch_label, predict])
 		_label = np.argmax(_trainY, axis=1)
 		_accuracy = np.mean(_label == _predict)
@@ -584,7 +584,7 @@ with tf.Session() as sess:
 			dev_cross_entropy = []
 			total_label = []
 			total_predt = []
-			for eval_idx in xrange(EVAL_ITER_NUM):
+			for eval_idx in range(EVAL_ITER_NUM):
 				eval_loss_v, _trainY, _predict = sess.run([loss, batch_eval_label, predict_eval])
 				_label = np.argmax(_trainY, axis=1)
 				_accuracy = np.mean(_label == _predict)
@@ -601,4 +601,3 @@ with tf.Session() as sess:
 			plot.flush()
 
 		plot.tick()
-
