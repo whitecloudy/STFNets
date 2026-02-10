@@ -566,6 +566,8 @@ else:
 			beta1 = ADAM_B1,
 			beta2 = ADAM_B2
 		).minimize(loss, var_list=t_vars)
+	
+max_accuracy = 0.0
 
 with tf.Session() as sess:
 	tf.global_variables_initializer().run()
@@ -592,11 +594,18 @@ with tf.Session() as sess:
 				total_predt += _predict.tolist()
 				dev_accuracy.append(_accuracy)
 				dev_cross_entropy.append(eval_loss_v)
-			plot.plot('dev accuracy', np.mean(dev_accuracy))
+			dev_accuracy_mean = np.mean(dev_accuracy)
+			plot.plot('dev accuracy', dev_accuracy_mean)
 			plot.plot('dev cross entropy', np.mean(dev_cross_entropy))
 			plot.plot('dev macro f1', f1_score(total_label, total_predt, average='macro'))
 
+			saver = tf.train.Saver()
+			saver.save(sess, os.path.join(select, 'latest_model.ckpt'))
 
+			if dev_accuracy_mean > max_accuracy:
+				max_accuracy = dev_accuracy_mean
+				saver = tf.train.Saver()
+				saver.save(sess, os.path.join(select, 'best_model.ckpt'))
 		if (iteration < 5) or (iteration % 50 == 49):
 			plot.flush()
 
