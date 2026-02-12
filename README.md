@@ -15,6 +15,16 @@
 
 # Appended README
 
-Current branch was tested with CPU and WiFi dataset only.
+Current branch was tested with CPU and WiFi dataset.
 
 Python3.6, tensorflow 1.4, numpy 1.19 was used.
+
+For using (Nvidia) GPU, Docker is recommended due to cuda version matches with tensorflow.
+
+Run "Docker_build_n_run.sh" to build image and run "python STFNets.py [Input]".(run with sudo is recommended)
+
+Example
+
+> sudo ./Docker_build_n_run.sh wifi
+
+will run "python STFNets.py wifi".
