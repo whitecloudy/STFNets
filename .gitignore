@@ -1,4 +1,7 @@
 *.pyc
 *.jpg
+*.png
 *.tfrecord
 *.pkl
+
+wifi
