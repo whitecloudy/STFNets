@@ -79,8 +79,8 @@ class ComplexLayerNorm(nn.Module):
         # Parameters initialized to match TF code
         self.beta_r = nn.Parameter(torch.zeros(1, 1, 1, c_size))
         self.beta_i = nn.Parameter(torch.zeros(1, 1, 1, c_size))
-        self.gamma_rr = nn.Parameter(torch.full((1, 1, 1, c_size), 0.70710678118))
-        self.gamma_ii = nn.Parameter(torch.full((1, 1, 1, c_size), 0.70710678118))
+        self.gamma_rr = nn.Parameter(torch.full((1, 1, 1, c_size), 1/math.sqrt(2)))
+        self.gamma_ii = nn.Parameter(torch.full((1, 1, 1, c_size), 1/math.sqrt(2)))
         self.gamma_ri = nn.Parameter(torch.zeros(1, 1, 1, c_size))
 
     def forward(self, in_r, in_i):
@@ -137,11 +137,17 @@ class STFLayer(nn.Module):
         # 1. Patch Filter (FILTER_FLAG)
         if FILTER_FLAG:
             self.global_kernel_size = GLOBAL_KERNEL_SIZE
-            # Base kernel for resizing
-            self.patch_kernel_r = nn.Parameter(torch.randn(1, c_in * self.c_out_per_fft, 1, self.global_kernel_size // 2 + 1))
-            self.patch_kernel_i = nn.Parameter(torch.randn(1, c_in * self.c_out_per_fft, 1, self.global_kernel_size // 2 + 1))
-            nn.init.xavier_uniform_(self.patch_kernel_r)
-            nn.init.xavier_uniform_(self.patch_kernel_i)
+            
+            if FILTER_INIT == 'real':
+                # Initialize in time domain (matches complex_glorot_uniform with FILTER_INIT='real')
+                self.patch_kernel_time = nn.Parameter(torch.randn(1, c_in * self.c_out_per_fft, 1, self.global_kernel_size))
+                nn.init.xavier_uniform_(self.patch_kernel_time)
+            else:
+                # Base kernel for resizing (Frequency domain init)
+                self.patch_kernel_r = nn.Parameter(torch.randn(1, c_in * self.c_out_per_fft, 1, self.global_kernel_size // 2 + 1))
+                self.patch_kernel_i = nn.Parameter(torch.randn(1, c_in * self.c_out_per_fft, 1, self.global_kernel_size // 2 + 1))
+                nn.init.xavier_uniform_(self.patch_kernel_r)
+                nn.init.xavier_uniform_(self.patch_kernel_i)
             
             self.patch_bias_r = nn.Parameter(torch.zeros(self.c_out_per_fft * len(self.fft_list)))
 
@@ -174,6 +180,7 @@ class STFLayer(nn.Module):
         # x: [Batch, c_in, time]
         
         patch_fft_list = [0.] * len(self.fft_n_list)
+        patch_mask_list = [[] for _ in range(len(self.fft_n_list))]
         
         # STFT and Merge
         for i, fft_n in enumerate(self.fft_n_list):
@@ -204,10 +211,14 @@ class STFLayer(nn.Module):
                 if tar_fft_n < fft_n:
                     continue
                 elif tar_fft_n == fft_n:
+                    patch_mask = torch.ones_like(patch_fft)
+                    for exist_mask in patch_mask_list[j]:
+                        patch_mask = patch_mask - exist_mask
+                    
                     if isinstance(patch_fft_list[j], float):
-                        patch_fft_list[j] = patch_fft
+                        patch_fft_list[j] = patch_fft * patch_mask
                     else:
-                        patch_fft_list[j] = patch_fft_list[j] + patch_fft
+                        patch_fft_list[j] = patch_fft_list[j] + patch_fft * patch_mask
                 else:
                     # Merge logic
                     ratio = tar_fft_n // fft_n
@@ -229,21 +240,28 @@ class STFLayer(nn.Module):
                     patch_merged = torch.sum(patch_fft_mod * patch_atten, dim=-1) # [B, T_new, F, C]
                     patch_merged = patch_merged * float(ratio)
                     
-                    # Zero Interp (Pad frequency)
-                    pm_shape = patch_merged.shape
-                    zeros = torch.zeros(pm_shape[0], pm_shape[1], pm_shape[2], ratio-1, pm_shape[3], 
-                                        device=x.device, dtype=patch_merged.dtype)
-                    pm_exp = patch_merged.unsqueeze(3)
-                    pm_concat = torch.cat([pm_exp, zeros], dim=3)
-                    pm_reshaped = pm_concat.view(pm_shape[0], pm_shape[1], pm_shape[2]*ratio, pm_shape[3])
-                    
                     target_F = tar_fft_n // 2 + 1
-                    patch_final = pm_reshaped[:, :, :target_F, :]
+
+                    def zero_interp(in_tensor, ratio, target_F):
+                        pm_shape = in_tensor.shape
+                        zeros = torch.zeros(pm_shape[0], pm_shape[1], pm_shape[2], ratio-1, pm_shape[3], 
+                                            device=in_tensor.device, dtype=in_tensor.dtype)
+                        pm_exp = in_tensor.unsqueeze(3)
+                        pm_concat = torch.cat([pm_exp, zeros], dim=3)
+                        pm_reshaped = pm_concat.view(pm_shape[0], pm_shape[1], pm_shape[2]*ratio, pm_shape[3])
+                        return pm_reshaped[:, :, :target_F, :]
+                    
+                    patch_mask = zero_interp(torch.ones_like(patch_merged), ratio, target_F)
+                    for exist_mask in patch_mask_list[j]:
+                        patch_mask = patch_mask - exist_mask
+                    patch_mask_list[j].append(patch_mask)
+                    
+                    patch_final = zero_interp(patch_merged, ratio, target_F)
                     
                     if isinstance(patch_fft_list[j], float):
-                        patch_fft_list[j] = patch_final
+                        patch_fft_list[j] = patch_final * patch_mask
                     else:
-                        patch_fft_list[j] = patch_fft_list[j] + patch_final
+                        patch_fft_list[j] = patch_fft_list[j] + patch_final * patch_mask
 
         # Convolution and Output Generation
         patch_time_list = []
@@ -303,8 +321,19 @@ class STFLayer(nn.Module):
 
             if FILTER_FLAG:
                 target_F = fft_n // 2 + 1
-                k_r = F.interpolate(self.patch_kernel_r, size=(1, target_F), mode='bilinear', align_corners=True)
-                k_i = F.interpolate(self.patch_kernel_i, size=(1, target_F), mode='bilinear', align_corners=True)
+                
+                if FILTER_INIT == 'real':
+                    # Compute FFT of time-domain kernel
+                    k_time = self.patch_kernel_time.squeeze(2) # [1, Channels, Time]
+                    k_complex = torch.fft.rfft(k_time, n=self.global_kernel_size, dim=-1) # [1, Channels, Freq]
+                    base_k_r = k_complex.real.unsqueeze(2) # [1, Channels, 1, Freq]
+                    base_k_i = k_complex.imag.unsqueeze(2)
+                else:
+                    base_k_r = self.patch_kernel_r
+                    base_k_i = self.patch_kernel_i
+
+                k_r = F.interpolate(base_k_r, size=(1, target_F), mode='bilinear', align_corners=True)
+                k_i = F.interpolate(base_k_i, size=(1, target_F), mode='bilinear', align_corners=True)
                 
                 k_r = k_r.view(1, 1, self.c_in, self.c_out_per_fft, target_F).permute(0, 1, 4, 2, 3)
                 k_i = k_i.view(1, 1, self.c_in, self.c_out_per_fft, target_F).permute(0, 1, 4, 2, 3)
@@ -317,8 +346,6 @@ class STFLayer(nn.Module):
                 
                 patch_out_r = torch.sum(real, dim=3)
                 patch_out_i = torch.sum(imag, dim=3)
-                
-                patch_out_r = patch_out_r + self.patch_bias_r[i*self.c_out_per_fft : (i+1)*self.c_out_per_fft]
 
             if ACT_DOMAIN == 'freq':
                 patch_out_r = F.leaky_relu(patch_out_r)
@@ -342,44 +369,47 @@ class STFLayer(nn.Module):
         patch_time_final = torch.cat(patch_time_list, dim=2) # [B, time, total_C]
         patch_time_final = patch_time_final.permute(0, 2, 1) # [B, total_C, time]
         
+        if FILTER_FLAG:
+            patch_time_final = patch_time_final + self.patch_bias_r.view(1, -1, 1)
+        
         if ACT_DOMAIN == 'time':
             patch_time_final = F.leaky_relu(patch_time_final)
             
         return patch_time_final
 
+class SpatialDropout(nn.Module):
+    def __init__(self, p):
+        super(SpatialDropout, self).__init__()
+        self.dropout = nn.Dropout2d(p)
+    
+    def forward(self, x):
+        x = x.unsqueeze(-1)    # [B, C, T] -> [B, C, T, 1]
+        x = self.dropout(x)
+        x = x.squeeze(-1)      # [B, C, T, 1] -> [B, C, T]
+        return x
+
 class STFNet(nn.Module):
     def __init__(self):
         super(STFNet, self).__init__()
-        
         self.acc_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
-        self.acc_dropout1 = nn.Dropout(1 - KEEP_PROB)
-        
         self.acc_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
-        self.acc_dropout2 = nn.Dropout(1 - KEEP_PROB)
-        
         self.acc_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)
-        self.acc_dropout3 = nn.Dropout(1 - KEEP_PROB)
         
         self.gyro_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
-        self.gyro_dropout1 = nn.Dropout(1 - KEEP_PROB)
-        
         self.gyro_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
-        self.gyro_dropout2 = nn.Dropout(1 - KEEP_PROB)
-        
         self.gyro_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)
-        self.gyro_dropout3 = nn.Dropout(1 - KEEP_PROB)
         
         self.sensor_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT,
                                       out_fft_list=GEN_FFT_N2, ser_size=SERIES_SIZE2, pooling=True)
-        self.sensor_dropout1 = nn.Dropout(1 - KEEP_PROB)
-        
         self.sensor_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT,
                                       ser_size=SERIES_SIZE2)
-        self.sensor_dropout2 = nn.Dropout(1 - KEEP_PROB)
-        
         self.sensor_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT,
                                       ser_size=SERIES_SIZE2)
-        self.sensor_dropout3 = nn.Dropout(1 - KEEP_PROB)
+
+        if DROP_FLAG:
+            self.dropout = SpatialDropout(1 - KEEP_PROB)
+        else:
+            self.dropout = nn.Identity()
         
         self.fc = nn.Linear(GEN_C_OUT, OUT_DIM)
 
@@ -391,19 +421,19 @@ class STFNet(nn.Module):
         acc_in = acc_in.permute(0, 2, 1)
         gyro_in = gyro_in.permute(0, 2, 1)
         
-        a1 = self.acc_dropout1(self.acc_layer1(acc_in))
-        a2 = self.acc_dropout2(self.acc_layer2(a1))
-        a3 = self.acc_dropout3(self.acc_layer3(a2))
+        a1 = self.dropout(self.acc_layer1(acc_in))
+        a2 = self.dropout(self.acc_layer2(a1))
+        a3 = self.dropout(self.acc_layer3(a2))
         
-        g1 = self.gyro_dropout1(self.gyro_layer1(gyro_in))
-        g2 = self.gyro_dropout2(self.gyro_layer2(g1))
-        g3 = self.gyro_dropout3(self.gyro_layer3(g2))
+        g1 = self.dropout(self.gyro_layer1(gyro_in))
+        g2 = self.dropout(self.gyro_layer2(g1))
+        g3 = self.dropout(self.gyro_layer3(g2))
         
         s_in = torch.cat([a3, g3], dim=1)
         
-        s1 = self.sensor_dropout1(self.sensor_layer1(s_in))
-        s2 = self.sensor_dropout2(self.sensor_layer2(s1))
-        s3 = self.sensor_dropout3(self.sensor_layer3(s2))
+        s1 = self.dropout(self.sensor_layer1(s_in))
+        s2 = self.dropout(self.sensor_layer2(s1))
+        s3 = self.dropout(self.sensor_layer3(s2))
         
         out = torch.mean(s3, dim=2)
         logits = self.fc(out)
@@ -413,22 +443,24 @@ class STFNet(nn.Module):
 # Data Loading & Training Loop
 # ==========================================
 
-class DummyDataset(torch.utils.data.Dataset):
-    def __init__(self, size, length, channels, classes):
-        self.size = size
-        self.length = length
-        self.channels = channels
-        self.classes = classes
-    
+class NPZDataset(torch.utils.data.Dataset):
+    def __init__(self, npz_path, series_size, sensor_axis, sensor_num):
+        # Load npz file
+        with np.load(npz_path) as data:
+            # Convert data to PyTorch tensor
+            self.x = torch.tensor(data['example'], dtype=torch.float32)
+            self.y = torch.tensor(data['label'], dtype=torch.float32)
+        
+        # Adjust dimensions to model input shape [B, SERIES_SIZE, SENSOR_AXIS*SENSOR_NUM]
+        expected_dim = series_size * sensor_axis * sensor_num
+        if self.x.dim() == 2 and self.x.shape[1] == expected_dim:
+            self.x = self.x.view(-1, series_size, sensor_axis * sensor_num)
+        
     def __len__(self):
-        return self.size
+        return len(self.x)
     
     def __getitem__(self, idx):
-        # Random data for demonstration
-        x = torch.randn(self.length, self.channels)
-        y = torch.zeros(self.classes)
-        y[torch.randint(0, self.classes, (1,))] = 1
-        return x, y
+        return self.x[idx], self.y[idx]
 
 if __name__ == "__main__":
     # Initialize Model
@@ -438,51 +470,99 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=ADAM_LR, betas=(ADAM_B1, ADAM_B2))
     criterion = nn.CrossEntropyLoss()
     
-    # Data Loaders (Using dummy data as TFRecords are not available)
-    # In a real scenario, implement a Dataset that reads the CSVs or TFRecords
-    train_dataset = DummyDataset(1000, SERIES_SIZE, SENSOR_AXIS*SENSOR_NUM, OUT_DIM)
+    # Data Loaders (Set npz file path)
+    train_npz_path = os.path.join(SELECT, 'train.npz')
+    eval_npz_path = os.path.join(SELECT, 'eval.npz')
+    
+    if not os.path.exists(train_npz_path) or not os.path.exists(eval_npz_path):
+        print(f"No Data files {train_npz_path}, {eval_npz_path} found.")
+        sys.exit(1)
+        
+    train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    eval_dataset = DummyDataset(200, SERIES_SIZE, SENSOR_AXIS*SENSOR_NUM, OUT_DIM)
+    eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
     eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE, shuffle=False)
     
-    TOTAL_ITER_NUM = 1000
+    TOTAL_ITER_NUM = 10000000
     
-    print("Starting training...")
-    model.train()
+    print("Start training...")
     
     iter_count = 0
+    max_accuracy = 0.0
+    
+    # PyTorch usually runs by epoch, but create an infinite iterator to maintain the iteration method of the original TF code
+    train_iter = iter(train_loader)
+    
     while iter_count < TOTAL_ITER_NUM:
-        for batch_idx, (data, target) in enumerate(train_loader):
-            data, target = data.to(device), target.to(device)
+        model.train()
+        
+        try:
+            data, target = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            data, target = next(train_iter)
             
-            optimizer.zero_grad()
-            output = model(data)
+        data, target = data.to(device), target.to(device)
+        
+        optimizer.zero_grad()
+        output = model(data)
+        
+        # Target comes as one-hot vector, so convert to index
+        target_indices = torch.argmax(target, dim=1)
+        loss = criterion(output, target_indices)
+        
+        # L2 Regularization
+        l2_reg = 0.0
+        for name, param in model.named_parameters():
+            if 'angle' not in name:
+                l2_reg += 0.5 * torch.sum(param ** 2)
+        loss += 5e-4 * l2_reg
+        
+        loss.backward()
+        
+        if CLIP_FLAG:
+            torch.nn.utils.clip_grad_value_(model.parameters(), 0.3)
             
-            # Target is one-hot in TF code, CrossEntropyLoss expects class indices
-            target_indices = torch.argmax(target, dim=1)
-            loss = criterion(output, target_indices)
+        optimizer.step()
+        
+        # Perform validation every 50 iterations like the original code
+        if iter_count % 50 == 49:
+            model.eval()
+            eval_loss = 0
+            correct = 0
+            total = 0
+            total_labels = []
+            total_preds = []
             
-            # L2 Regularization
-            l2_reg = 0.0
-            for name, param in model.named_parameters():
-                if 'angle' not in name:
-                    l2_reg += torch.norm(param)
-            loss += 5e-4 * l2_reg
+            with torch.no_grad():
+                for eval_data, eval_target in eval_loader:
+                    eval_data, eval_target = eval_data.to(device), eval_target.to(device)
+                    eval_output = model(eval_data)
+                    
+                    eval_target_indices = torch.argmax(eval_target, dim=1)
+                    batch_loss = criterion(eval_output, eval_target_indices)
+                    eval_loss += batch_loss.item()
+                    
+                    pred = eval_output.argmax(dim=1, keepdim=True)
+                    correct += pred.eq(eval_target_indices.view_as(pred)).sum().item()
+                    total += eval_data.size(0)
+                    
+                    total_labels.extend(eval_target_indices.cpu().numpy())
+                    total_preds.extend(pred.cpu().numpy().flatten())
             
-            loss.backward()
+            dev_accuracy = correct / total
+            dev_cross_entropy = eval_loss / len(eval_loader)
+            dev_macro_f1 = f1_score(total_labels, total_preds, average='macro')
             
-            if CLIP_FLAG:
-                torch.nn.utils.clip_grad_value_(model.parameters(), 0.3)
-                
-            optimizer.step()
+            print(f"Iter {iter_count+1}: Train Loss {loss.item():.4f} | Dev Acc {dev_accuracy:.4f} | Dev Loss {dev_cross_entropy:.4f} | F1 {dev_macro_f1:.4f}")
             
-            if iter_count % 10 == 0:
-                pred = output.argmax(dim=1, keepdim=True)
-                correct = pred.eq(target_indices.view_as(pred)).sum().item()
-                acc = correct / len(data)
-                print(f"Iter {iter_count}: Loss {loss.item():.4f}, Acc {acc:.4f}")
+            # Save model
+            torch.save(model.state_dict(), os.path.join(SELECT, 'latest_model.pth'))
             
-            iter_count += 1
-            if iter_count >= TOTAL_ITER_NUM:
-                break
+            if dev_accuracy > max_accuracy:
+                max_accuracy = dev_accuracy
+                torch.save(model.state_dict(), os.path.join(SELECT, 'best_model.pth'))
+                print(f"--> Best performance updated! Model saved (Acc: {max_accuracy:.4f})")
+        
+        iter_count += 1
