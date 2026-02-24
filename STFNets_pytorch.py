@@ -207,12 +207,16 @@ class STFLayer(nn.Module):
             
             patch_fft = torch.complex(patch_fft_r, patch_fft_i) # [B, T, F, C]
             
+            if self.pooling:
+                patch_fft = patch_fft[:, :, :fft_n // 2 + 1, :]
+
             for j, tar_fft_n in enumerate(self.fft_n_list):
                 if tar_fft_n < fft_n:
                     continue
                 elif tar_fft_n == fft_n:
                     patch_mask = torch.ones_like(patch_fft)
                     for exist_mask in patch_mask_list[j]:
+                        # print(exist_mask.shape, patch_mask.shape)
                         patch_mask = patch_mask - exist_mask
                     
                     if isinstance(patch_fft_list[j], float):
@@ -479,10 +483,10 @@ if __name__ == "__main__":
         sys.exit(1)
         
     train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4)
     
     eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
-    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4)
     
     TOTAL_ITER_NUM = 10000000
     
@@ -535,7 +539,7 @@ if __name__ == "__main__":
             total_labels = []
             total_preds = []
             
-            with torch.no_grad():
+            with torch.inference_mode():
                 for eval_data, eval_target in eval_loader:
                     eval_data, eval_target = eval_data.to(device), eval_target.to(device)
                     eval_output = model(eval_data)
