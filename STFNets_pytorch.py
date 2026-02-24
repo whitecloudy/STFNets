@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as Func
 import numpy as np
 import math
 import os
@@ -234,7 +234,7 @@ class STFLayer(nn.Module):
                     patch_atten = torch.matmul(patch_fft_mod, k)
                     patch_atten = patch_atten + b
                     patch_atten = torch.abs(patch_atten)
-                    patch_atten = F.softmax(patch_atten, dim=-1)
+                    patch_atten = Func.softmax(patch_atten, dim=-1)
                     patch_atten = torch.complex(patch_atten, torch.zeros_like(patch_atten))
                     
                     patch_merged = torch.sum(patch_fft_mod * patch_atten, dim=-1) # [B, T_new, F, C]
@@ -297,15 +297,15 @@ class STFLayer(nn.Module):
                 p_i_in = p_i_padded.permute(0, 3, 1, 2)
                 
                 # Kernel Resize
-                curr_k_r = F.interpolate(self.conv_kernel_r, size=(1, k_len), mode='bilinear', align_corners=True)
-                curr_k_i = F.interpolate(self.conv_kernel_i, size=(1, k_len), mode='bilinear', align_corners=True)
+                curr_k_r = Func.interpolate(self.conv_kernel_r, size=(1, k_len), mode='bilinear', align_corners=True)
+                curr_k_i = Func.interpolate(self.conv_kernel_i, size=(1, k_len), mode='bilinear', align_corners=True)
                 
                 dilation = d_len
                 
-                out_rr = F.conv2d(p_r_in, curr_k_r, stride=1, dilation=(1, dilation))
-                out_ri = F.conv2d(p_r_in, curr_k_i, stride=1, dilation=(1, dilation))
-                out_ir = F.conv2d(p_i_in, curr_k_r, stride=1, dilation=(1, dilation))
-                out_ii = F.conv2d(p_i_in, curr_k_i, stride=1, dilation=(1, dilation))
+                out_rr = Func.conv2d(p_r_in, curr_k_r, stride=1, dilation=(1, dilation))
+                out_ri = Func.conv2d(p_r_in, curr_k_i, stride=1, dilation=(1, dilation))
+                out_ir = Func.conv2d(p_i_in, curr_k_r, stride=1, dilation=(1, dilation))
+                out_ii = Func.conv2d(p_i_in, curr_k_i, stride=1, dilation=(1, dilation))
                 
                 p_out_r = out_rr - out_ii
                 p_out_i = out_ri + out_ir
@@ -332,8 +332,8 @@ class STFLayer(nn.Module):
                     base_k_r = self.patch_kernel_r
                     base_k_i = self.patch_kernel_i
 
-                k_r = F.interpolate(base_k_r, size=(1, target_F), mode='bilinear', align_corners=True)
-                k_i = F.interpolate(base_k_i, size=(1, target_F), mode='bilinear', align_corners=True)
+                k_r = Func.interpolate(base_k_r, size=(1, target_F), mode='bilinear', align_corners=True)
+                k_i = Func.interpolate(base_k_i, size=(1, target_F), mode='bilinear', align_corners=True)
                 
                 k_r = k_r.view(1, 1, self.c_in, self.c_out_per_fft, target_F).permute(0, 1, 4, 2, 3)
                 k_i = k_i.view(1, 1, self.c_in, self.c_out_per_fft, target_F).permute(0, 1, 4, 2, 3)
@@ -348,8 +348,8 @@ class STFLayer(nn.Module):
                 patch_out_i = torch.sum(imag, dim=3)
 
             if ACT_DOMAIN == 'freq':
-                patch_out_r = F.leaky_relu(patch_out_r)
-                patch_out_i = F.leaky_relu(patch_out_i)
+                patch_out_r = Func.leaky_relu(patch_out_r)
+                patch_out_i = Func.leaky_relu(patch_out_i)
                 
             # ISTFT
             p_complex = torch.complex(patch_out_r, patch_out_i)
@@ -373,7 +373,7 @@ class STFLayer(nn.Module):
             patch_time_final = patch_time_final + self.patch_bias_r.view(1, -1, 1)
         
         if ACT_DOMAIN == 'time':
-            patch_time_final = F.leaky_relu(patch_time_final)
+            patch_time_final = Func.leaky_relu(patch_time_final)
             
         return patch_time_final
 
