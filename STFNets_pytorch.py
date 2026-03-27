@@ -6,12 +6,13 @@ import math
 import os
 import sys
 from sklearn.metrics import f1_score
+from widar_dataset import WiDARDataset
 
 # ==========================================
 # Configuration & Constants
 # ==========================================
 
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 GEN_FFT_N = [16, 32, 64, 128]
 GEN_FFT_STEP = GEN_FFT_N 
 FILTER_LEN = [3, 3, 3, 3]
@@ -474,26 +475,37 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=ADAM_LR, betas=(ADAM_B1, ADAM_B2))
     criterion = nn.CrossEntropyLoss()
     
-    # Data Loaders (Set npz file path)
-    train_npz_path = os.path.join(SELECT, 'train.npz')
-    eval_npz_path = os.path.join(SELECT, 'eval.npz')
+    # # Data Loaders (Set npz file path)
+    # train_npz_path = os.path.join(SELECT, 'train.npz')
+    # eval_npz_path = os.path.join(SELECT, 'eval.npz')
     
-    if not os.path.exists(train_npz_path) or not os.path.exists(eval_npz_path):
-        print(f"No Data files {train_npz_path}, {eval_npz_path} found.")
-        sys.exit(1)
+    # if not os.path.exists(train_npz_path) or not os.path.exists(eval_npz_path):
+    #     print(f"No Data files {train_npz_path}, {eval_npz_path} found.")
+    #     sys.exit(1)
         
-    train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4)
+    # train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
+    must_have=[f'-gesture{i}-' for i in range(4)]+['-gesture17-','-gesture18-']
+    must_not_have=["-user5-",]
+
+    # must_have=["-gesture0-",]
+    # must_not_have=["-user10-", "-user5-", "-user11-", "-user12-"]
+
+    train_dataset = WiDARDataset("widar_data", SERIES_SIZE, min_data_len=SERIES_SIZE*2, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
+    import copy
+    eval_dataset = copy.deepcopy(train_dataset)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
     
-    eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
-    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4)
+    eval_dataset.flip_splits()
+    # eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
+    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
     
-    TOTAL_ITER_NUM = 10000000
+    TOTAL_ITER_NUM = 1000000
     
     print("Start training...")
     
     iter_count = 0
     max_accuracy = 0.0
+    max_f1_score = 0.0
     
     # PyTorch usually runs by epoch, but create an infinite iterator to maintain the iteration method of the original TF code
     train_iter = iter(train_loader)
@@ -564,9 +576,9 @@ if __name__ == "__main__":
             # Save model
             torch.save(model.state_dict(), os.path.join(SELECT, 'latest_model.pth'))
             
-            if dev_accuracy > max_accuracy:
-                max_accuracy = dev_accuracy
+            if dev_macro_f1 > max_f1_score:
+                max_f1_score = dev_macro_f1
                 torch.save(model.state_dict(), os.path.join(SELECT, 'best_model.pth'))
-                print(f"--> Best performance updated! Model saved (Acc: {max_accuracy:.4f})")
+                print(f"--> Best performance updated! Model saved (F1: {max_f1_score:.4f})")
         
         iter_count += 1
