@@ -33,7 +33,7 @@ if len(sys.argv) > 1:
 if SELECT == 'wifi':
     SERIES_SIZE = 512
     SENSOR_AXIS = 30
-    SENSOR_NUM = 2
+    SENSOR_NUM = 3
     OUT_DIM = 6
     ACT_DOMAIN = 'freq'
     FILTER_FLAG = False
@@ -392,49 +392,76 @@ class SpatialDropout(nn.Module):
         x = self.dropout(x)
         x = x.squeeze(-1)      # [B, C, T, 1] -> [B, C, T]
         return x
+from collections import OrderedDict
 
 class STFNet(nn.Module):
     def __init__(self):
         super(STFNet, self).__init__()
-        self.acc_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
-        self.acc_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
-        self.acc_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)
-        
-        self.gyro_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
-        self.gyro_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
-        self.gyro_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)
-        
-        self.sensor_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT,
-                                      out_fft_list=GEN_FFT_N2, ser_size=SERIES_SIZE2, pooling=True)
-        self.sensor_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT,
-                                      ser_size=SERIES_SIZE2)
-        self.sensor_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT,
-                                      ser_size=SERIES_SIZE2)
 
         if DROP_FLAG:
             self.dropout = SpatialDropout(1 - KEEP_PROB)
         else:
             self.dropout = nn.Identity()
+
+        self.acc_layers = nn.ModuleList()
         
-        self.fc = nn.Linear(GEN_C_OUT, OUT_DIM)
+        for s in range(SENSOR_NUM):
+            self.acc_layers.append(
+                nn.Sequential(OrderedDict([
+                    (f'acc_layer1_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)),
+                    (f'dropout1_s{s}', self.dropout),
+                    (f'acc_layer2_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)),
+                    (f'dropout2_s{s}', self.dropout),
+                    (f'acc_layer3_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)),
+                    (f'dropout3_s{s}', self.dropout)
+                ]))
+            )
+
+        GEN_C_OUT_MERGE = (GEN_C_OUT//2) * SENSOR_NUM
+
+        # self.acc_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
+        # self.acc_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
+        # self.acc_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)
+        
+        # self.gyro_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
+        # self.gyro_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
+        # self.gyro_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)
+        
+        self.sensor_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT_MERGE, GEN_C_OUT_MERGE,
+                                      out_fft_list=GEN_FFT_N2, ser_size=SERIES_SIZE2, pooling=True)
+        self.sensor_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT_MERGE, GEN_C_OUT_MERGE,
+                                      ser_size=SERIES_SIZE2)
+        self.sensor_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT_MERGE, GEN_C_OUT_MERGE,
+                                      ser_size=SERIES_SIZE2)
+    
+        self.fc = nn.Linear(GEN_C_OUT_MERGE, OUT_DIM)
 
     def forward(self, x):
         # x: [B, SERIES_SIZE, SENSOR_AXIS*SENSOR_NUM]
-        acc_in = x[:, :, :SENSOR_AXIS]
-        gyro_in = x[:, :, SENSOR_AXIS:]
+        # acc_in = x[:, :, :SENSOR_AXIS]
+        # gyro_in = x[:, :, SENSOR_AXIS:]
+
+        x = x.permute(0, 2, 1) # [B, C, T]
+        x_list = torch.split(x, SENSOR_AXIS, dim=1) # List of [B, SENSOR_AXIS, T]
+        assert len(x_list) == SENSOR_NUM, "Sensor split does not match SENSOR_NUM"
+        processed_list = []
+        for i in range(SENSOR_NUM):
+            out = self.acc_layers[i](x_list[i])
+            processed_list.append(out)
         
-        acc_in = acc_in.permute(0, 2, 1)
-        gyro_in = gyro_in.permute(0, 2, 1)
+        # acc_in = acc_in.permute(0, 2, 1)
+        # gyro_in = gyro_in.permute(0, 2, 1)
         
-        a1 = self.dropout(self.acc_layer1(acc_in))
-        a2 = self.dropout(self.acc_layer2(a1))
-        a3 = self.dropout(self.acc_layer3(a2))
+        # a1 = self.dropout(self.acc_layer1(acc_in))
+        # a2 = self.dropout(self.acc_layer2(a1))
+        # a3 = self.dropout(self.acc_layer3(a2))
         
-        g1 = self.dropout(self.gyro_layer1(gyro_in))
-        g2 = self.dropout(self.gyro_layer2(g1))
-        g3 = self.dropout(self.gyro_layer3(g2))
+        # g1 = self.dropout(self.gyro_layer1(gyro_in))
+        # g2 = self.dropout(self.gyro_layer2(g1))
+        # g3 = self.dropout(self.gyro_layer3(g2))
         
-        s_in = torch.cat([a3, g3], dim=1)
+        # s_in = torch.cat([a3, g3], dim=1)
+        s_in = torch.cat(processed_list, dim=1) # [B, total_C, T]
         
         s1 = self.dropout(self.sensor_layer1(s_in))
         s2 = self.dropout(self.sensor_layer2(s1))
@@ -468,6 +495,25 @@ class NPZDataset(torch.utils.data.Dataset):
         return self.x[idx], self.y[idx]
 
 if __name__ == "__main__":
+    # train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
+    must_have=[f'-gesture{i}-' for i in range(4)]+['-gesture17-','-gesture18-']
+    # must_have=[f'-user10-gesture{i}-' for i in range(4)]+['-user10-gesture17-','-user10-gesture18-']
+    must_not_have=["-user5-",]
+
+    # must_have=["-gesture0-",]
+    # must_not_have=["-user10-", "-user5-", "-user11-", "-user12-"]
+
+    train_dataset = WiDARDataset("widar_data", min_data_len=1024, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
+
+    SERIES_SIZE = train_dataset.max_T
+    import copy
+    eval_dataset = copy.deepcopy(train_dataset)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
+    
+    eval_dataset.flip_splits()
+    # eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
+    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
+
     # Initialize Model
     model = STFNet().to(device)
     
@@ -483,23 +529,8 @@ if __name__ == "__main__":
     #     print(f"No Data files {train_npz_path}, {eval_npz_path} found.")
     #     sys.exit(1)
         
-    # train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
-    must_have=[f'-gesture{i}-' for i in range(4)]+['-gesture17-','-gesture18-']
-    must_not_have=["-user5-",]
-
-    # must_have=["-gesture0-",]
-    # must_not_have=["-user10-", "-user5-", "-user11-", "-user12-"]
-
-    train_dataset = WiDARDataset("widar_data", SERIES_SIZE, min_data_len=SERIES_SIZE*2, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
-    import copy
-    eval_dataset = copy.deepcopy(train_dataset)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
     
-    eval_dataset.flip_splits()
-    # eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
-    eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
-    
-    TOTAL_ITER_NUM = 1000000
+    TOTAL_ITER_NUM = 200000
     
     print("Start training...")
     
