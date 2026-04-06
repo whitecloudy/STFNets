@@ -7,20 +7,13 @@ import os
 import sys
 from sklearn.metrics import f1_score
 from widar_dataset import WiDARDataset
+import tqdm
 
 # ==========================================
 # Configuration & Constants
 # ==========================================
 
 BATCH_SIZE = 128
-GEN_FFT_N = [16, 32, 64, 128]
-GEN_FFT_STEP = GEN_FFT_N 
-FILTER_LEN = [3, 3, 3, 3]
-DILATION_LEN = [1, 2, 4, 8]
-
-GEN_FFT_N2 = [12, 24, 48, 96]
-SERIES_SIZE2 = 384
-GEN_FFT_STEP2 = GEN_FFT_N2
 
 GEN_C_OUT = 64
 KEEP_PROB = 0.8
@@ -31,7 +24,7 @@ if len(sys.argv) > 1:
     SELECT = sys.argv[1]
 
 if SELECT == 'wifi':
-    SERIES_SIZE = 512
+    SERIES_SIZE = 256
     SENSOR_AXIS = 30
     SENSOR_NUM = 3
     OUT_DIM = 6
@@ -53,6 +46,17 @@ elif SELECT == 'hhar':
 else:
     print("Select wifi or hhar")
     sys.exit(1)
+
+GEN_FFT_N = [SERIES_SIZE//n for n in [32, 16, 8, 4]]
+GEN_FFT_STEP = GEN_FFT_N 
+FILTER_LEN = [3, 3, 3, 3]
+DILATION_LEN = [1, 2, 4, 8]
+
+SERIES_SIZE2 = SERIES_SIZE // 4 * 3
+GEN_FFT_N2 = [SERIES_SIZE2//n for n in [32, 16, 8, 4]]
+# GEN_FFT_N2 = [12, 24, 48, 96]
+# SERIES_SIZE2 = 384
+GEN_FFT_STEP2 = GEN_FFT_N2
 
 DROP_FLAG = True
 INPUT_COMPLEX_NORM_FLAG = True
@@ -507,7 +511,7 @@ if __name__ == "__main__":
     # must_have=["-gesture0-",]
     # must_not_have=["-user10-", "-user5-", "-user11-", "-user12-"]
 
-    series_size = 512
+    series_size = SERIES_SIZE
 
     train_dataset = WiDARDataset("widar_data", target_size=series_size, min_data_len=1024, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
 
@@ -535,60 +539,59 @@ if __name__ == "__main__":
     #     sys.exit(1)
         
     
-    TOTAL_ITER_NUM = 200000
+    # TOTAL_ITER_NUM = 200000
+    TOTAL_EPOCH_NUM = 1000
     
     print("Start training...")
     
-    iter_count = 0
+    epoch_count = 0
     max_accuracy = 0.0
     max_f1_score = 0.0
     
     # PyTorch usually runs by epoch, but create an infinite iterator to maintain the iteration method of the original TF code
-    train_iter = iter(train_loader)
+    # train_iter = iter(train_loader)
     
-    while iter_count < TOTAL_ITER_NUM:
+    while epoch_count < TOTAL_EPOCH_NUM:
         model.train()
         
-        try:
-            data, target = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            data, target = next(train_iter)
+        with tqdm.tqdm(train_loader, desc=f"Epoch {epoch_count+1}/{TOTAL_EPOCH_NUM}") as t:
+            for data, target in t:
+                data, target = data.to(device), target.to(device)
+                
+                optimizer.zero_grad()
+                output = model(data)
             
-        data, target = data.to(device), target.to(device)
-        
-        optimizer.zero_grad()
-        output = model(data)
-        
-        # Target comes as one-hot vector, so convert to index
-        target_indices = torch.argmax(target, dim=1)
-        loss = criterion(output, target_indices)
-        
-        # L2 Regularization
-        l2_reg = 0.0
-        for name, param in model.named_parameters():
-            if 'angle' not in name:
-                l2_reg += 0.5 * torch.sum(param ** 2)
-        loss += 5e-4 * l2_reg
-        
-        loss.backward()
-        
-        if CLIP_FLAG:
-            torch.nn.utils.clip_grad_value_(model.parameters(), 0.3)
-            
-        optimizer.step()
+                # Target comes as one-hot vector, so convert to index
+                target_indices = torch.argmax(target, dim=1)
+                loss = criterion(output, target_indices)
+                
+                # L2 Regularization
+                l2_reg = 0.0
+                for name, param in model.named_parameters():
+                    if 'angle' not in name:
+                        l2_reg += 0.5 * torch.sum(param ** 2)
+                loss += 5e-4 * l2_reg
+                
+                loss.backward()
+                
+                if CLIP_FLAG:
+                    torch.nn.utils.clip_grad_value_(model.parameters(), 0.3)
+                    
+                optimizer.step()
+
+                t.set_description(f'Loss: {loss.item():.4f}')
         
         # Perform validation every 50 iterations like the original code
-        if iter_count % 50 == 49:
-            model.eval()
-            eval_loss = 0
-            correct = 0
-            total = 0
-            total_labels = []
-            total_preds = []
-            
-            with torch.inference_mode():
-                for eval_data, eval_target in eval_loader:
+        model.eval()
+        eval_loss = 0
+        correct = 0
+        total = 0
+        total_labels = []
+        total_preds = []
+        
+        with torch.inference_mode():
+            with tqdm.tqdm(eval_loader, desc="Evaluating") as eval_t:
+                for eval_data, eval_target in eval_t:
                     eval_data, eval_target = eval_data.to(device), eval_target.to(device)
                     eval_output = model(eval_data)
                     
@@ -602,19 +605,19 @@ if __name__ == "__main__":
                     
                     total_labels.extend(eval_target_indices.cpu().numpy())
                     total_preds.extend(pred.cpu().numpy().flatten())
-            
-            dev_accuracy = correct / total
-            dev_cross_entropy = eval_loss / len(eval_loader)
-            dev_macro_f1 = f1_score(total_labels, total_preds, average='macro')
-            
-            print(f"Iter {iter_count+1}: Train Loss {loss.item():.4f} | Dev Acc {dev_accuracy:.4f} | Dev Loss {dev_cross_entropy:.4f} | F1 {dev_macro_f1:.4f}")
-            
-            # Save model
-            torch.save(model.state_dict(), os.path.join(SELECT, 'latest_model.pth'))
-            
-            if dev_macro_f1 > max_f1_score:
-                max_f1_score = dev_macro_f1
-                torch.save(model.state_dict(), os.path.join(SELECT, 'best_model.pth'))
-                print(f"--> Best performance updated! Model saved (F1: {max_f1_score:.4f})")
         
-        iter_count += 1
+        dev_accuracy = correct / total
+        dev_cross_entropy = eval_loss / len(eval_loader)
+        dev_macro_f1 = f1_score(total_labels, total_preds, average='macro')
+        
+        print(f"Epoch {epoch_count+1}: Train Loss {loss.item():.4f} | Dev Acc {dev_accuracy:.4f} | Dev Loss {dev_cross_entropy:.4f} | F1 {dev_macro_f1:.4f}")
+        
+        # Save model
+        torch.save(model.state_dict(), os.path.join(SELECT, 'latest_model.pth'))
+        
+        if dev_macro_f1 > max_f1_score:
+            max_f1_score = dev_macro_f1
+            torch.save(model.state_dict(), os.path.join(SELECT, 'best_model.pth'))
+            print(f"--> Best performance updated! Model saved (F1: {max_f1_score:.4f})")
+        
+        epoch_count += 1
