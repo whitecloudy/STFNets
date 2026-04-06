@@ -128,12 +128,12 @@ def interpolate_data(data, target_size):
     return interpolated_data
 
 
-def preprocess_csi_gen(csi, noise_sigma):
+def preprocess_csi_gen(csi, noise_sigma, target_size=512):
     process_csi = csi/noise_sigma
 
     # Subsampling Process
     # process_csi = fit_data_size(process_csi, target_size=2048)
-    process_csi = interpolate_data(process_csi, target_size=512)
+    process_csi = interpolate_data(process_csi, target_size=target_size)
 
     process_csi = process_csi_section(process_csi, rx_acnt=3)
 
@@ -145,18 +145,19 @@ def preprocess_csi_gen(csi, noise_sigma):
     return process_csi
 
 def _preprocess_worker(args):
-    file_path, min_data_len = args
+    file_path, min_data_len, target_size = args
     data = np.load(file_path)
     csi = np.array(data['csi_data'])
     if csi.shape[0] < min_data_len:
         return file_path, None
     noise_sigma = np.array(data['noise_array'])
-    processed_csi = preprocess_csi_gen(csi, noise_sigma)
+    processed_csi = preprocess_csi_gen(csi, noise_sigma, target_size=target_size)
     return file_path, processed_csi
 
 class WiDARDataset(Dataset):
-    def __init__(self, dir_path, min_data_len=1024, transform=None, split_ratio=0.8, split_seed=42, must_have=None, must_not_have=None):
+    def __init__(self, dir_path, target_size=512, min_data_len=1024, transform=None, split_ratio=0.8, split_seed=42, must_have=None, must_not_have=None):
         self.dir_path = dir_path
+        self.target_size = target_size
         self.min_data_len = min_data_len
         self.transform = transform
         self.split_ratio = split_ratio
@@ -178,7 +179,7 @@ class WiDARDataset(Dataset):
         self.file_paths = self.filter_files(self.file_paths)
 
         temp_results = {}
-        worker_args = [(fp, self.min_data_len) for fp in self.file_paths]
+        worker_args = [(fp, self.min_data_len, self.target_size) for fp in self.file_paths]
         print("Filtering and preprocessing data using multiprocessing...")
         valid_file_paths = []
         self.max_T = 0

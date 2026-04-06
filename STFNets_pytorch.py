@@ -395,8 +395,12 @@ class SpatialDropout(nn.Module):
 from collections import OrderedDict
 
 class STFNet(nn.Module):
-    def __init__(self):
+    def __init__(self, input_size=SERIES_SIZE, sensor_axis=SENSOR_AXIS, sensor_num=SENSOR_NUM, out_dim=OUT_DIM):
         super(STFNet, self).__init__()
+        self.input_size = input_size
+        self.sensor_axis = sensor_axis
+        self.sensor_num = sensor_num
+        self.out_dim = out_dim
 
         if DROP_FLAG:
             self.dropout = SpatialDropout(1 - KEEP_PROB)
@@ -405,19 +409,19 @@ class STFNet(nn.Module):
 
         self.acc_layers = nn.ModuleList()
         
-        for s in range(SENSOR_NUM):
+        for s in range(self.sensor_num):
             self.acc_layers.append(
                 nn.Sequential(OrderedDict([
-                    (f'acc_layer1_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)),
+                    (f'acc_layer1_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, self.sensor_axis, GEN_C_OUT, ser_size=self.input_size)),
                     (f'dropout1_s{s}', self.dropout),
-                    (f'acc_layer2_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)),
+                    (f'acc_layer2_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT, ser_size=self.input_size)),
                     (f'dropout2_s{s}', self.dropout),
-                    (f'acc_layer3_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2)),
+                    (f'acc_layer3_s{s}', STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT//2, ser_size=self.input_size)),
                     (f'dropout3_s{s}', self.dropout)
                 ]))
             )
 
-        GEN_C_OUT_MERGE = (GEN_C_OUT//2) * SENSOR_NUM
+        GEN_C_OUT_MERGE = (GEN_C_OUT//2) * self.sensor_num
 
         # self.acc_layer1 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, SENSOR_AXIS, GEN_C_OUT)
         # self.acc_layer2 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT, GEN_C_OUT)
@@ -434,7 +438,7 @@ class STFNet(nn.Module):
         self.sensor_layer3 = STFLayer(GEN_FFT_N, GEN_FFT_STEP, FILTER_LEN, DILATION_LEN, GEN_C_OUT_MERGE, GEN_C_OUT_MERGE,
                                       ser_size=SERIES_SIZE2)
     
-        self.fc = nn.Linear(GEN_C_OUT_MERGE, OUT_DIM)
+        self.fc = nn.Linear(GEN_C_OUT_MERGE, self.out_dim)
 
     def forward(self, x):
         # x: [B, SERIES_SIZE, SENSOR_AXIS*SENSOR_NUM]
@@ -442,10 +446,10 @@ class STFNet(nn.Module):
         # gyro_in = x[:, :, SENSOR_AXIS:]
 
         x = x.permute(0, 2, 1) # [B, C, T]
-        x_list = torch.split(x, SENSOR_AXIS, dim=1) # List of [B, SENSOR_AXIS, T]
-        assert len(x_list) == SENSOR_NUM, "Sensor split does not match SENSOR_NUM"
+        x_list = torch.split(x, self.sensor_axis, dim=1) # List of [B, SENSOR_AXIS, T]
+        assert len(x_list) == self.sensor_num, "Sensor split does not match SENSOR_NUM"
         processed_list = []
-        for i in range(SENSOR_NUM):
+        for i in range(self.sensor_num):
             out = self.acc_layers[i](x_list[i])
             processed_list.append(out)
         
@@ -503,9 +507,10 @@ if __name__ == "__main__":
     # must_have=["-gesture0-",]
     # must_not_have=["-user10-", "-user5-", "-user11-", "-user12-"]
 
-    train_dataset = WiDARDataset("widar_data", min_data_len=1024, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
+    series_size = 512
 
-    SERIES_SIZE = train_dataset.max_T
+    train_dataset = WiDARDataset("widar_data", target_size=series_size, min_data_len=1024, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
+
     import copy
     eval_dataset = copy.deepcopy(train_dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
@@ -515,7 +520,7 @@ if __name__ == "__main__":
     eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
 
     # Initialize Model
-    model = STFNet().to(device)
+    model = STFNet(input_size=series_size).to(device)
     
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=ADAM_LR, betas=(ADAM_B1, ADAM_B2))
