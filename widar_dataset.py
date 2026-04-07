@@ -191,14 +191,12 @@ class WiDARDataset(Dataset):
                     if p_csi.shape[0] > self.max_T:
                         self.max_T = p_csi.shape[0]
         print(f"Max time steps after preprocessing: {self.max_T}")
-        self.max_T = 512 # 고정된 시퀀스 길이로 설정 (모델 입력 크기에 맞게)
 
         self.file_paths = valid_file_paths
         print(f"Total files after filtering: {len(self.file_paths)}")
 
         print("Stacking preprocessed data into a single shared tensor...")
         self.path_to_idx = {fp: i for i, fp in enumerate(self.file_paths)}
-        
         # 첫 번째 데이터로 feature 크기 확인
         first_csi = next(iter(temp_results.values()))
         num_features = first_csi.shape[1]
@@ -275,6 +273,93 @@ class WiDARDataset(Dataset):
 
         return process_csi, label
         # return csi.astype(np.float32)
+        
+def _synth_preprocess_worker(args):
+    file_path, target_size = args
+    data = np.load(file_path)
+    csi = np.array(data['csi'])  # (6, T, 32)
+    csi = np.split(csi, 2, axis=0)
+    csi = csi[0] + csi[1] * 1j  # (3, T, 32)
+    csi = csi[:, :, :30]  # (3, T, 30)
+    csi = np.split(csi, 3, axis=0)
+    csi = np.concatenate(csi, axis=2)  # (1, T, 90)
+    csi = np.squeeze(csi, axis=0)  # (T, 90)
+    cls = np.array(data['cls'])
+
+    # print(csi.shape)
+    processed_csi = preprocess_csi_gen(csi, None, target_size=target_size)
+    if np.any(np.isnan(processed_csi)) or np.any(np.isinf(processed_csi)):
+        print(f"Invalid values found in {file_path}")
+        return file_path, None, cls
+    return file_path, processed_csi, cls
+
+
+class SyntheticWiDARDataset(Dataset):
+    def __init__(self, synth_dir, usage_ratio=1.0, target_size=512):
+        self.synth_dir = synth_dir
+        self.usage_ratio = usage_ratio
+        self.target_size = target_size
+        self.min_data_len = target_size
+        self.file_paths = find_npz_files(synth_dir)
+
+        if isinstance(self.synth_dir, str):
+            # find .npz files in recursive way
+            self.file_paths = find_npz_files(self.synth_dir)
+        elif isinstance(self.synth_dir, list):
+            for path in self.synth_dir:
+                self.file_paths.extend(find_npz_files(path))
+        else:
+            raise ValueError("synth_dir should be a string or a list of strings.")
+        
+        temp_results = {}
+        worker_args = [(fp, self.target_size) for fp in self.file_paths]
+        print("Filtering and preprocessing data using multiprocessing...")
+        valid_file_paths = []
+        self.max_T = 0
+        self.csi_shape = None
+        with mp.Pool(processes=mp.cpu_count()) as pool:
+            for fp, p_csi, classes in tqdm(pool.imap_unordered(_synth_preprocess_worker, worker_args), total=len(worker_args), desc="Processing"):
+                if p_csi is not None:
+                    temp_results[fp] = (p_csi, classes)
+                    valid_file_paths.append(fp)
+                    if p_csi.shape[0] > self.max_T:
+                        self.max_T = p_csi.shape[0]
+
+                    if self.csi_shape is None:
+                        self.csi_shape = p_csi.shape
+
+        print(f"Max time steps after preprocessing: {self.max_T}")
+
+        self.file_paths = valid_file_paths
+        print(f"Total files after filtering: {len(self.file_paths)}")
+
+        print("Stacking preprocessed data into a single shared tensor...")
+        self.path_to_idx = {fp: i for i, fp in enumerate(self.file_paths)}
+        
+        # 전체 데이터를 담을 단일 텐서 메모리 할당 (DataLoader 워커 간 메모리 공유 목적)
+        self.preprocessed_data = torch.zeros(((len(self.file_paths),) + self.csi_shape), dtype=torch.float32)
+        self.labels = np.zeros((len(self.file_paths), 6), dtype=np.float32)  # Assuming 6 classes for one-hot encoding
+        for fp, (p_csi, classes) in temp_results.items():
+            idx = self.path_to_idx[fp]
+            T = p_csi.shape[0]
+            T = min(T, self.max_T)  # 시퀀스 길이 제한
+            self.preprocessed_data[idx, :T, :] = torch.tensor(p_csi, dtype=torch.float32)[:T, :]
+            self.labels[idx][classes] = 1.0
+            
+        del temp_results # 복제 방지를 위해 임시 딕셔너리 메모리 해제
+
+    def __len__(self):
+        return len(self.file_paths)
+    
+    def __getitem__(self, idx):
+        file_path = self.file_paths[idx]
+
+        real_idx = self.path_to_idx[file_path]
+        process_csi = self.preprocessed_data[real_idx]
+        label = self.labels[real_idx]
+
+        return process_csi, label
+        
 
 if __name__ == "__main__":
     must_have=[f'-gesture{i}-' for i in range(4)]+['-gesture17-','-gesture18-']

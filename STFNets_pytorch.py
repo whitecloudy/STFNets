@@ -6,8 +6,10 @@ import math
 import os
 import sys
 from sklearn.metrics import f1_score
-from widar_dataset import WiDARDataset
+from widar_dataset import WiDARDataset, SyntheticWiDARDataset
 import tqdm
+import pandas as pd
+import json
 
 # ==========================================
 # Configuration & Constants
@@ -20,8 +22,6 @@ KEEP_PROB = 0.8
 
 # Selection Logic
 SELECT = 'wifi' # Default
-if len(sys.argv) > 1:
-    SELECT = sys.argv[1]
 
 if SELECT == 'wifi':
     SERIES_SIZE = 256
@@ -47,13 +47,16 @@ else:
     print("Select wifi or hhar")
     sys.exit(1)
 
-GEN_FFT_N = [SERIES_SIZE//n for n in [32, 16, 8, 4]]
+GENERAL_FFT_STEP = [32, 16, 8, 4]
+# GENERAL_FFT_STEP = [SERIES_SIZE//16, SERIES_SIZE//32, SERIES_SIZE//64, SERIES_SIZE//128]
+
+GEN_FFT_N = [SERIES_SIZE//n for n in GENERAL_FFT_STEP]
 GEN_FFT_STEP = GEN_FFT_N 
 FILTER_LEN = [3, 3, 3, 3]
 DILATION_LEN = [1, 2, 4, 8]
 
 SERIES_SIZE2 = SERIES_SIZE // 4 * 3
-GEN_FFT_N2 = [SERIES_SIZE2//n for n in [32, 16, 8, 4]]
+GEN_FFT_N2 = [SERIES_SIZE2//n for n in GENERAL_FFT_STEP]
 # GEN_FFT_N2 = [12, 24, 48, 96]
 # SERIES_SIZE2 = 384
 GEN_FFT_STEP2 = GEN_FFT_N2
@@ -502,7 +505,37 @@ class NPZDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.x[idx], self.y[idx]
 
-if __name__ == "__main__":
+import click
+
+@click.command()
+@click.option('--select', type=click.Choice(['wifi', 'hhar']), default='wifi', help='Dataset selection: wifi or hhar')
+@click.option('--train_dir', type=str, default='widar_data/training_set', help='Path to training npz file')
+@click.option('--eval_dir', type=str, default='widar_data/validation_set', help='Path to evaluation npz file')
+@click.option('--synth_dir', type=str, default=None, help='Path to synthetic npz file')
+@click.option('--seed', type=int, default=42, help='Random seed for reproducibility')
+@click.option('--total_epoch_num', type=int, default=1000, help='Total number of training epochs')
+@click.option('--output_dir', type=str, default='model_output', help='Directory to save model checkpoints and logs')
+@click.option('--zero_to_one_norm', is_flag=True, help='Whether to apply zero-to-one normalization to input data')
+@click.option('--data_norm', type=float, default=1.0, help='Normalization factor for input data (if zero_to_one_norm is not used)')
+
+def main(**argv):
+    # select, train_dir, eval_dir, seed, total_epoch_num, output_dir, zero_to_one_norm, data_norm = argv.values()
+    select = argv.get('select')
+    train_dir = argv.get('train_dir')
+    eval_dir = argv.get('eval_dir')
+    synth_dir = argv.get('synth_dir')
+    seed = argv.get('seed')
+    total_epoch_num = argv.get('total_epoch_num')
+    output_dir = argv.get('output_dir')
+    zero_to_one_norm = argv.get('zero_to_one_norm')
+    data_norm = argv.get('data_norm')
+
+    global SELECT
+    SELECT = select
+    torch.manual_seed(seed+116481)
+
+    os.makedirs(output_dir, exist_ok=True)
+
     # train_dataset = NPZDataset(train_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
     must_have=[f'-gesture{i}-' for i in range(4)]+['-gesture17-','-gesture18-']
     # must_have=[f'-user10-gesture{i}-' for i in range(4)]+['-user10-gesture17-','-user10-gesture18-']
@@ -513,14 +546,19 @@ if __name__ == "__main__":
 
     series_size = SERIES_SIZE
 
-    train_dataset = WiDARDataset("widar_data", target_size=series_size, min_data_len=1024, split_ratio=0.8, must_have=must_have, must_not_have=must_not_have)
+    train_dataset = WiDARDataset(train_dir, target_size=series_size, min_data_len=0, split_ratio=1.0, must_have=must_have, must_not_have=must_not_have)
+    if synth_dir is not None:
+        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=1.0, target_size=series_size)
+        from torch.utils.data import ConcatDataset
+        train_dataset = ConcatDataset([train_dataset, synth_dataset])
 
-    import copy
-    eval_dataset = copy.deepcopy(train_dataset)
+    # import copy
+    # eval_dataset = copy.deepcopy(train_dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
     
-    eval_dataset.flip_splits()
+    # eval_dataset.flip_splits()
     # eval_dataset = NPZDataset(eval_npz_path, SERIES_SIZE, SENSOR_AXIS, SENSOR_NUM)
+    eval_dataset = WiDARDataset(eval_dir, target_size=series_size, min_data_len=0, split_ratio=1.0, must_have=must_have, must_not_have=must_not_have)
     eval_loader = torch.utils.data.DataLoader(eval_dataset, batch_size=BATCH_SIZE*4, shuffle=False, persistent_workers=True, pin_memory=True, num_workers=4, prefetch_factor=4)
 
     # Initialize Model
@@ -540,7 +578,7 @@ if __name__ == "__main__":
         
     
     # TOTAL_ITER_NUM = 200000
-    TOTAL_EPOCH_NUM = 1000
+    TOTAL_EPOCH_NUM = total_epoch_num
     
     print("Start training...")
     
@@ -550,14 +588,23 @@ if __name__ == "__main__":
     
     # PyTorch usually runs by epoch, but create an infinite iterator to maintain the iteration method of the original TF code
     # train_iter = iter(train_loader)
+
+    result_csv_log = []
+    json.dump(argv, open(os.path.join(output_dir, 'config.json'), 'w'), indent=4)
     
     while epoch_count < TOTAL_EPOCH_NUM:
         model.train()
+
+        train_loss = []
         
         with tqdm.tqdm(train_loader, desc=f"Epoch {epoch_count+1}/{TOTAL_EPOCH_NUM}") as t:
             for data, target in t:
                 data, target = data.to(device), target.to(device)
-                
+                if zero_to_one_norm:
+                    data = (data - data.min()) / (data.max() - data.min() + 1e-12)
+                elif data_norm != 1.0:
+                    data = data / data_norm
+
                 optimizer.zero_grad()
                 output = model(data)
             
@@ -580,7 +627,8 @@ if __name__ == "__main__":
                 optimizer.step()
 
                 t.set_description(f'Loss: {loss.item():.4f}')
-        
+                train_loss.append(loss.item())
+        train_loss = np.mean(train_loss)
         # Perform validation every 50 iterations like the original code
         model.eval()
         eval_loss = 0
@@ -610,14 +658,29 @@ if __name__ == "__main__":
         dev_cross_entropy = eval_loss / len(eval_loader)
         dev_macro_f1 = f1_score(total_labels, total_preds, average='macro')
         
-        print(f"Epoch {epoch_count+1}: Train Loss {loss.item():.4f} | Dev Acc {dev_accuracy:.4f} | Dev Loss {dev_cross_entropy:.4f} | F1 {dev_macro_f1:.4f}")
-        
+        print(f"Epoch {epoch_count+1}: Train Loss {train_loss:.4f} | Dev Acc {dev_accuracy:.4f} | Dev Loss {dev_cross_entropy:.4f} | F1 {dev_macro_f1:.4f}")
+        result_csv_log.append({
+            'epoch': epoch_count+1,
+            'train_loss': train_loss,
+            'dev_accuracy': dev_accuracy,
+            'dev_loss': dev_cross_entropy,
+            'dev_macro_f1': dev_macro_f1
+        })
         # Save model
-        torch.save(model.state_dict(), os.path.join(SELECT, 'latest_model.pth'))
+        torch.save(model.state_dict(), os.path.join(output_dir, 'latest_model.pth'))
         
         if dev_macro_f1 > max_f1_score:
             max_f1_score = dev_macro_f1
-            torch.save(model.state_dict(), os.path.join(SELECT, 'best_model.pth'))
+            torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
             print(f"--> Best performance updated! Model saved (F1: {max_f1_score:.4f})")
         
         epoch_count += 1
+
+        # Save training results to CSV
+        result_df = pd.DataFrame(result_csv_log)
+        result_df.to_csv(os.path.join(output_dir, 'training_results.csv'), index=False)
+
+
+
+if __name__ == "__main__":
+    main()
