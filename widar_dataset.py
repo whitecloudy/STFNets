@@ -287,7 +287,7 @@ def _synth_preprocess_worker(args):
     cls = np.array(data['cls'])
 
     # print(csi.shape)
-    processed_csi = preprocess_csi_gen(csi, None, target_size=target_size)
+    processed_csi = preprocess_csi_gen(csi, 1, target_size=target_size)
     if np.any(np.isnan(processed_csi)) or np.any(np.isinf(processed_csi)):
         print(f"Invalid values found in {file_path}")
         return file_path, None, cls

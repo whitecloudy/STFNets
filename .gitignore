@@ -5,3 +5,6 @@
 *.pkl
 
 wifi
+widar_data
+output
+*.pt
