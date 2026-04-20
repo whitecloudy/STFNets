@@ -127,6 +127,14 @@ def interpolate_data(data, target_size):
     
     return interpolated_data
 
+def split_files(file_paths, split_ratio, split_seed):
+    file_paths = sorted(file_paths)
+    np.random.seed(split_seed)
+    np.random.shuffle(file_paths)
+    split_index = int(split_ratio * len(file_paths))
+    return file_paths[:split_index], file_paths[split_index:]
+
+
 
 def preprocess_csi_gen(csi, noise_sigma, target_size=512):
     process_csi = csi/noise_sigma
@@ -211,7 +219,7 @@ class WiDARDataset(Dataset):
             
         del temp_results # 복제 방지를 위해 임시 딕셔너리 메모리 해제
 
-        self.file_paths, self.non_selected_paths = self.split_files(self.file_paths)
+        self.file_paths, self.non_selected_paths = split_files(self.file_paths, self.split_ratio, self.split_seed)
 
     def flip_splits(self):
         tmp = self.file_paths
@@ -234,13 +242,6 @@ class WiDARDataset(Dataset):
                 continue
             filtered_paths.append(path)
         return filtered_paths
-    
-    def split_files(self, file_paths):
-        file_paths = sorted(file_paths)
-        np.random.seed(self.split_seed)
-        np.random.shuffle(file_paths)
-        split_index = int(self.split_ratio * len(file_paths))
-        return file_paths[:split_index], file_paths[split_index:]
     
     def get_gesture_num_from_path(self, file_path):
         # Extract gesture label from file path (assuming format includes '-gestureX-')
@@ -295,12 +296,17 @@ def _synth_preprocess_worker(args):
 
 
 class SyntheticWiDARDataset(Dataset):
-    def __init__(self, synth_dir, usage_ratio=1.0, target_size=512):
+    def __init__(self, synth_dir, usage_ratio=1.0, usage_seed=2239, target_size=512, additive_noise_ratio=0.0, additive_noise_std=1.0):
         self.synth_dir = synth_dir
         self.usage_ratio = usage_ratio
+        self.usage_seed = usage_seed
+
         self.target_size = target_size
         self.min_data_len = target_size
         self.file_paths = find_npz_files(synth_dir)
+        self.additive_noise_ratio = additive_noise_ratio
+        self.additive_noise_std = additive_noise_std
+        
 
         if isinstance(self.synth_dir, str):
             # find .npz files in recursive way
@@ -310,6 +316,8 @@ class SyntheticWiDARDataset(Dataset):
                 self.file_paths.extend(find_npz_files(path))
         else:
             raise ValueError("synth_dir should be a string or a list of strings.")
+        
+        self.file_paths, self.dead_file_paths = split_files(self.file_paths, self.usage_ratio, self.usage_seed)
         
         temp_results = {}
         worker_args = [(fp, self.target_size) for fp in self.file_paths]
@@ -348,6 +356,10 @@ class SyntheticWiDARDataset(Dataset):
             
         del temp_results # 복제 방지를 위해 임시 딕셔너리 메모리 해제
 
+    def noise_additive(self, csi, additive_noise_std):
+        noise = np.random.normal(0, additive_noise_std, csi.shape)
+        return csi + noise
+
     def __len__(self):
         return len(self.file_paths)
     
@@ -357,6 +369,9 @@ class SyntheticWiDARDataset(Dataset):
         real_idx = self.path_to_idx[file_path]
         process_csi = self.preprocessed_data[real_idx]
         label = self.labels[real_idx]
+
+        if (self.additive_noise_ratio != 0.0) and (self.additive_noise_ratio > np.random.rand()):
+            process_csi = self.noise_additive(process_csi, self.additive_noise_std)
 
         return process_csi, label
         

@@ -517,6 +517,8 @@ import click
 @click.option('--output_dir', type=str, default='model_output', help='Directory to save model checkpoints and logs')
 @click.option('--zero_to_one_norm', is_flag=True, help='Whether to apply zero-to-one normalization to input data')
 @click.option('--data_norm', type=float, default=1.0, help='Normalization factor for input data (if zero_to_one_norm is not used)')
+@click.option('--additive_noise', type=float, default=1.0, help='Standard deviation of additive Gaussian noise to apply to synthetic input data')
+@click.option('--additive_noise_ratio', type=float, default=0.0, help='Ratio of samples in synthetic dataset to which additive noise will be applied')
 
 def main(**argv):
     # select, train_dir, eval_dir, seed, total_epoch_num, output_dir, zero_to_one_norm, data_norm = argv.values()
@@ -529,6 +531,8 @@ def main(**argv):
     output_dir = argv.get('output_dir')
     zero_to_one_norm = argv.get('zero_to_one_norm')
     data_norm = argv.get('data_norm')
+    additive_noise = float(argv.get('additive_noise'))
+    additive_noise_ratio = float(argv.get('additive_noise_ratio'))    
 
     global SELECT
     SELECT = select
@@ -548,7 +552,7 @@ def main(**argv):
 
     train_dataset = WiDARDataset(train_dir, target_size=series_size, min_data_len=0, split_ratio=1.0, must_have=must_have, must_not_have=must_not_have)
     if synth_dir is not None:
-        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=1.0, target_size=series_size)
+        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=1.0, target_size=series_size, additive_noise_std=additive_noise, additive_noise_ratio=additive_noise_ratio)
         from torch.utils.data import ConcatDataset
         train_dataset = ConcatDataset([train_dataset, synth_dataset])
 
