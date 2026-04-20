@@ -287,12 +287,12 @@ def _synth_preprocess_worker(args):
     csi = np.squeeze(csi, axis=0)  # (T, 90)
     cls = np.array(data['cls'])
 
-    # print(csi.shape)
-    processed_csi = preprocess_csi_gen(csi, 1, target_size=target_size)
-    if np.any(np.isnan(processed_csi)) or np.any(np.isinf(processed_csi)):
-        print(f"Invalid values found in {file_path}")
-        return file_path, None, cls
-    return file_path, processed_csi, cls
+    # processed_csi = preprocess_csi_gen(csi, 1, target_size=target_size)
+    # if np.any(np.isnan(processed_csi)) or np.any(np.isinf(processed_csi)):
+    #     print(f"Invalid values found in {file_path}")
+    #     return file_path, None, cls
+    # return file_path, processed_csi, cls
+    return file_path, csi, cls
 
 
 class SyntheticWiDARDataset(Dataset):
@@ -345,19 +345,19 @@ class SyntheticWiDARDataset(Dataset):
         self.path_to_idx = {fp: i for i, fp in enumerate(self.file_paths)}
         
         # 전체 데이터를 담을 단일 텐서 메모리 할당 (DataLoader 워커 간 메모리 공유 목적)
-        self.preprocessed_data = torch.zeros(((len(self.file_paths),) + self.csi_shape), dtype=torch.float32)
+        self.non_preprocessed_data = torch.zeros(((len(self.file_paths),) + self.csi_shape), dtype=torch.complex64)
         self.labels = np.zeros((len(self.file_paths), 6), dtype=np.float32)  # Assuming 6 classes for one-hot encoding
         for fp, (p_csi, classes) in temp_results.items():
             idx = self.path_to_idx[fp]
             T = p_csi.shape[0]
             T = min(T, self.max_T)  # 시퀀스 길이 제한
-            self.preprocessed_data[idx, :T, :] = torch.tensor(p_csi, dtype=torch.float32)[:T, :]
+            self.non_preprocessed_data[idx, :T, :] = torch.tensor(p_csi, dtype=torch.complex64)[:T, :]            
             self.labels[idx][classes] = 1.0
             
         del temp_results # 복제 방지를 위해 임시 딕셔너리 메모리 해제
 
     def noise_additive(self, csi, additive_noise_std):
-        noise = np.random.normal(0, additive_noise_std, csi.shape)
+        noise = torch.randn_like(csi) * additive_noise_std + 1j * torch.randn_like(csi) * additive_noise_std
         return csi + noise
 
     def __len__(self):
@@ -367,13 +367,16 @@ class SyntheticWiDARDataset(Dataset):
         file_path = self.file_paths[idx]
 
         real_idx = self.path_to_idx[file_path]
-        process_csi = self.preprocessed_data[real_idx]
+        non_processed_csi = self.non_preprocessed_data[real_idx]
         label = self.labels[real_idx]
 
         if (self.additive_noise_ratio != 0.0) and (self.additive_noise_ratio > np.random.rand()):
-            process_csi = self.noise_additive(process_csi, self.additive_noise_std)
+            non_processed_csi = self.noise_additive(non_processed_csi, self.additive_noise_std)
 
-        return process_csi, label
+        processed_csi = preprocess_csi_gen(non_processed_csi.cpu().numpy(), noise_sigma=1.0, target_size=self.target_size)
+        processed_csi = torch.tensor(processed_csi, dtype=torch.float32)
+
+        return processed_csi, label
         
 
 if __name__ == "__main__":
