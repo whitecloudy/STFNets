@@ -520,6 +520,8 @@ import click
 @click.option('--data_norm', type=float, default=1.0, help='Normalization factor for input data (if zero_to_one_norm is not used)')
 @click.option('--additive_noise', type=float, default=1.0, help='Standard deviation of additive Gaussian noise to apply to synthetic input data')
 @click.option('--additive_noise_ratio', type=float, default=0.0, help='Ratio of samples in synthetic dataset to which additive noise will be applied')
+@click.option('--synth_additive_noise', type=float, default=1.0, help='Standard deviation of additive Gaussian noise to apply to synthetic input data')
+@click.option('--synth_additive_noise_ratio', type=float, default=0.0, help='Ratio of samples in synthetic dataset to which additive noise will be applied')
 
 def main(**argv):
     # select, train_dir, eval_dir, seed, total_epoch_num, output_dir, zero_to_one_norm, data_norm = argv.values()
@@ -535,6 +537,9 @@ def main(**argv):
     data_norm = argv.get('data_norm')
     additive_noise = float(argv.get('additive_noise'))
     additive_noise_ratio = float(argv.get('additive_noise_ratio'))    
+    synth_additive_noise = float(argv.get('synth_additive_noise'))
+    synth_additive_noise_ratio = float(argv.get('synth_additive_noise_ratio'))
+    
 
     global SELECT
     SELECT = select
@@ -552,9 +557,9 @@ def main(**argv):
 
     series_size = SERIES_SIZE
 
-    train_dataset = WiDARDataset(train_dir, target_size=series_size, min_data_len=0, split_ratio=1.0, must_have=must_have, must_not_have=must_not_have)
+    train_dataset = WiDARDataset(train_dir, target_size=series_size, min_data_len=0, split_ratio=1.0, must_have=must_have, must_not_have=must_not_have, additive_noise_ratio=additive_noise_ratio, additive_noise_std=additive_noise)
     if synth_dir is not None:
-        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=synth_ratio, target_size=series_size, additive_noise_std=additive_noise, additive_noise_ratio=additive_noise_ratio)
+        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=synth_ratio, target_size=series_size, additive_noise_std=synth_additive_noise, additive_noise_ratio=synth_additive_noise_ratio)
         from torch.utils.data import ConcatDataset
         train_dataset = ConcatDataset([train_dataset, synth_dataset])
 

@@ -135,14 +135,7 @@ def split_files(file_paths, split_ratio, split_seed):
     return file_paths[:split_index], file_paths[split_index:]
 
 
-
-def preprocess_csi_gen(csi, noise_sigma, target_size=512):
-    process_csi = csi/noise_sigma
-
-    # Subsampling Process
-    # process_csi = fit_data_size(process_csi, target_size=2048)
-    process_csi = interpolate_data(process_csi, target_size=target_size)
-
+def preprocess_csi_gen(process_csi):
     process_csi = process_csi_section(process_csi, rx_acnt=3)
 
     process_csi = np.abs(process_csi)  # (time steps, features)
@@ -159,11 +152,13 @@ def _preprocess_worker(args):
     if csi.shape[0] < min_data_len:
         return file_path, None
     noise_sigma = np.array(data['noise_array'])
-    processed_csi = preprocess_csi_gen(csi, noise_sigma, target_size=target_size)
-    return file_path, processed_csi
+    
+    process_csi = csi / noise_sigma
+    process_csi = interpolate_data(process_csi, target_size=target_size)
+    return file_path, process_csi
 
 class WiDARDataset(Dataset):
-    def __init__(self, dir_path, target_size=512, min_data_len=1024, transform=None, split_ratio=0.8, split_seed=42, must_have=None, must_not_have=None):
+    def __init__(self, dir_path, target_size=512, min_data_len=1024, transform=None, split_ratio=0.8, split_seed=42, must_have=None, must_not_have=None, additive_noise_ratio=0.0, additive_noise_std=1.0):
         self.dir_path = dir_path
         self.target_size = target_size
         self.min_data_len = min_data_len
@@ -172,8 +167,9 @@ class WiDARDataset(Dataset):
         self.split_seed = split_seed
         self.must_have = must_have
         self.must_not_have = must_not_have
+        self.additive_noise_ratio = additive_noise_ratio
+        self.additive_noise_std = additive_noise_std
         self.file_paths = []
-        self.max_T = 0
 
         if isinstance(dir_path, str):
             # find .npz files in recursive way
@@ -190,15 +186,11 @@ class WiDARDataset(Dataset):
         worker_args = [(fp, self.min_data_len, self.target_size) for fp in self.file_paths]
         print("Filtering and preprocessing data using multiprocessing...")
         valid_file_paths = []
-        self.max_T = 0
         with mp.Pool(processes=mp.cpu_count()) as pool:
             for fp, p_csi in tqdm(pool.imap_unordered(_preprocess_worker, worker_args), total=len(worker_args), desc="Processing"):
                 if p_csi is not None:
                     temp_results[fp] = p_csi
                     valid_file_paths.append(fp)
-                    if p_csi.shape[0] > self.max_T:
-                        self.max_T = p_csi.shape[0]
-        print(f"Max time steps after preprocessing: {self.max_T}")
 
         self.file_paths = valid_file_paths
         print(f"Total files after filtering: {len(self.file_paths)}")
@@ -210,16 +202,18 @@ class WiDARDataset(Dataset):
         num_features = first_csi.shape[1]
         
         # 전체 데이터를 담을 단일 텐서 메모리 할당 (DataLoader 워커 간 메모리 공유 목적)
-        self.preprocessed_data = torch.zeros((len(self.file_paths), self.max_T, num_features), dtype=torch.float32)
+        self.preprocessed_data = torch.zeros((len(self.file_paths), self.target_size, num_features), dtype=torch.complex64)
         for fp, p_csi in temp_results.items():
             idx = self.path_to_idx[fp]
-            T = p_csi.shape[0]
-            T = min(T, self.max_T)  # 시퀀스 길이 제한
-            self.preprocessed_data[idx, :T, :] = torch.tensor(p_csi, dtype=torch.float32)[:T, :]
+            self.preprocessed_data[idx, :, :] = torch.tensor(p_csi, dtype=torch.complex64)
             
         del temp_results # 복제 방지를 위해 임시 딕셔너리 메모리 해제
 
         self.file_paths, self.non_selected_paths = split_files(self.file_paths, self.split_ratio, self.split_seed)
+
+    def noise_additive(self, csi, additive_noise_std):
+        noise = torch.randn_like(csi.real) * additive_noise_std + 1j * torch.randn_like(csi.imag) * additive_noise_std
+        return csi + noise
 
     def flip_splits(self):
         tmp = self.file_paths
@@ -268,12 +262,17 @@ class WiDARDataset(Dataset):
         real_idx = self.path_to_idx[file_path]
         process_csi = self.preprocessed_data[real_idx]
 
+        if (self.additive_noise_ratio > 0.0) and (self.additive_noise_ratio > np.random.rand()):
+            process_csi = self.noise_additive(process_csi, self.additive_noise_std)
+
+        process_csi = preprocess_csi_gen(process_csi.cpu().numpy())
+        process_csi = torch.tensor(process_csi, dtype=torch.float32)
+
         # Get label from file path
         gesture_num = self.get_gesture_num_from_path(file_path)
         label = self.get_label_from_gesture_num(gesture_num)
 
         return process_csi, label
-        # return csi.astype(np.float32)
         
 def _synth_preprocess_worker(args):
     file_path, target_size = args
@@ -287,12 +286,10 @@ def _synth_preprocess_worker(args):
     csi = np.squeeze(csi, axis=0)  # (T, 90)
     cls = np.array(data['cls'])
 
-    # processed_csi = preprocess_csi_gen(csi, 1, target_size=target_size)
-    # if np.any(np.isnan(processed_csi)) or np.any(np.isinf(processed_csi)):
-    #     print(f"Invalid values found in {file_path}")
-    #     return file_path, None, cls
-    # return file_path, processed_csi, cls
-    return file_path, csi, cls
+    process_csi = csi / 1.0
+    process_csi = interpolate_data(process_csi, target_size=target_size)
+
+    return file_path, process_csi, cls
 
 
 class SyntheticWiDARDataset(Dataset):
@@ -323,20 +320,15 @@ class SyntheticWiDARDataset(Dataset):
         worker_args = [(fp, self.target_size) for fp in self.file_paths]
         print("Filtering and preprocessing data using multiprocessing...")
         valid_file_paths = []
-        self.max_T = 0
         self.csi_shape = None
         with mp.Pool(processes=mp.cpu_count()) as pool:
             for fp, p_csi, classes in tqdm(pool.imap_unordered(_synth_preprocess_worker, worker_args), total=len(worker_args), desc="Processing"):
                 if p_csi is not None:
                     temp_results[fp] = (p_csi, classes)
                     valid_file_paths.append(fp)
-                    if p_csi.shape[0] > self.max_T:
-                        self.max_T = p_csi.shape[0]
 
                     if self.csi_shape is None:
                         self.csi_shape = p_csi.shape
-
-        print(f"Max time steps after preprocessing: {self.max_T}")
 
         self.file_paths = valid_file_paths
         print(f"Total files after filtering: {len(self.file_paths)}")
@@ -349,15 +341,13 @@ class SyntheticWiDARDataset(Dataset):
         self.labels = np.zeros((len(self.file_paths), 6), dtype=np.float32)  # Assuming 6 classes for one-hot encoding
         for fp, (p_csi, classes) in temp_results.items():
             idx = self.path_to_idx[fp]
-            T = p_csi.shape[0]
-            T = min(T, self.max_T)  # 시퀀스 길이 제한
-            self.non_preprocessed_data[idx, :T, :] = torch.tensor(p_csi, dtype=torch.complex64)[:T, :]            
+            self.non_preprocessed_data[idx, :, :] = torch.tensor(p_csi, dtype=torch.complex64)            
             self.labels[idx][classes] = 1.0
             
         del temp_results # 복제 방지를 위해 임시 딕셔너리 메모리 해제
 
     def noise_additive(self, csi, additive_noise_std):
-        noise = torch.randn_like(csi) * additive_noise_std + 1j * torch.randn_like(csi) * additive_noise_std
+        noise = torch.randn_like(csi.real) * additive_noise_std + 1j * torch.randn_like(csi.imag) * additive_noise_std
         return csi + noise
 
     def __len__(self):
@@ -370,10 +360,10 @@ class SyntheticWiDARDataset(Dataset):
         non_processed_csi = self.non_preprocessed_data[real_idx]
         label = self.labels[real_idx]
 
-        if (self.additive_noise_ratio != 0.0) and (self.additive_noise_ratio > np.random.rand()):
+        if (self.additive_noise_ratio > 0.0) and (self.additive_noise_ratio > np.random.rand()):
             non_processed_csi = self.noise_additive(non_processed_csi, self.additive_noise_std)
 
-        processed_csi = preprocess_csi_gen(non_processed_csi.cpu().numpy(), noise_sigma=1.0, target_size=self.target_size)
+        processed_csi = preprocess_csi_gen(non_processed_csi.cpu().numpy())
         processed_csi = torch.tensor(processed_csi, dtype=torch.float32)
 
         return processed_csi, label
