@@ -512,6 +512,7 @@ import click
 @click.option('--train_dir', type=str, default='widar_data/training_set', help='Path to training npz file')
 @click.option('--eval_dir', type=str, default='widar_data/validation_set', help='Path to evaluation npz file')
 @click.option('--synth_dir', type=str, default=None, help='Path to synthetic npz file')
+@click.option('--synth_ratio', type=float, default=1.0, help='Ratio of synthetic data to use in training (if synth_dir is provided)')
 @click.option('--seed', type=int, default=42, help='Random seed for reproducibility')
 @click.option('--total_epoch_num', type=int, default=1000, help='Total number of training epochs')
 @click.option('--output_dir', type=str, default='model_output', help='Directory to save model checkpoints and logs')
@@ -526,6 +527,7 @@ def main(**argv):
     train_dir = argv.get('train_dir')
     eval_dir = argv.get('eval_dir')
     synth_dir = argv.get('synth_dir')
+    synth_ratio = argv.get('synth_ratio')
     seed = argv.get('seed')
     total_epoch_num = argv.get('total_epoch_num')
     output_dir = argv.get('output_dir')
@@ -552,7 +554,7 @@ def main(**argv):
 
     train_dataset = WiDARDataset(train_dir, target_size=series_size, min_data_len=0, split_ratio=1.0, must_have=must_have, must_not_have=must_not_have)
     if synth_dir is not None:
-        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=1.0, target_size=series_size, additive_noise_std=additive_noise, additive_noise_ratio=additive_noise_ratio)
+        synth_dataset = SyntheticWiDARDataset(synth_dir, usage_ratio=synth_ratio, target_size=series_size, additive_noise_std=additive_noise, additive_noise_ratio=additive_noise_ratio)
         from torch.utils.data import ConcatDataset
         train_dataset = ConcatDataset([train_dataset, synth_dataset])
 
