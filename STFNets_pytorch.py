@@ -543,7 +543,8 @@ def main(**argv):
 
     global SELECT
     SELECT = select
-    torch.manual_seed(seed+116481)
+    np.random.seed(seed*12+4454)
+    torch.manual_seed(seed*11+116481)
 
     os.makedirs(output_dir, exist_ok=True)
 
